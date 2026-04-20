@@ -1,3 +1,4 @@
+use futures::stream::{self, Stream, StreamExt};
 use thiserror::Error;
 
 use crate::chat::structs::{
@@ -296,6 +297,25 @@ pub enum LlmCompletionError {
     UnsupportedProvider(String),
     #[error("completion execution failed: {0}")]
     Execution(String),
+    #[error("completion stream ended without emitting a final response")]
+    MissingFinal,
+}
+
+/// Event emitted by [`LlmFacade::complete_streaming`] while a completion is in flight.
+///
+/// Step 1 of streaming only emits a single [`LlmStreamEvent::Final`]; delta variants are
+/// reserved for later steps that wire incremental decoding into the backend adapters.
+///
+/// The `Final` variant is boxed to keep enum size balanced across the small delta variants
+/// and the fully-assembled response payload.
+#[derive(Debug, Clone)]
+pub enum LlmStreamEvent {
+    /// Incremental assistant text produced by the model.
+    TextDelta(String),
+    /// Incremental reasoning/thinking text produced by the model.
+    ThinkingDelta(String),
+    /// Fully-assembled completion response marking the end of the stream.
+    Final(Box<LlmCompletionResponse>),
 }
 
 /// Xoxo-owned facade for resolving config entries into runtime-ready LLM targets.
@@ -427,6 +447,47 @@ impl LlmFacade {
     }
 
     pub async fn complete(
+        &self,
+        provider_config: &ProviderConfig,
+        request: LlmCompletionRequest,
+    ) -> Result<LlmCompletionResponse, LlmCompletionError> {
+        let mut stream = Box::pin(self.complete_streaming(provider_config, request));
+        while let Some(event) = stream.next().await {
+            match event? {
+                LlmStreamEvent::Final(response) => return Ok(*response),
+                LlmStreamEvent::TextDelta(_) | LlmStreamEvent::ThinkingDelta(_) => {}
+            }
+        }
+        Err(LlmCompletionError::MissingFinal)
+    }
+
+    /// Executes a completion and yields [`LlmStreamEvent`]s as the backend produces output.
+    ///
+    /// Step 1 of streaming runs the underlying backend to completion and emits exactly one
+    /// [`LlmStreamEvent::Final`] carrying the assembled response. Delta events will be added
+    /// once the Rig and ai-lib adapters gain incremental decoding.
+    ///
+    /// # Errors
+    ///
+    /// The yielded `Result` surfaces [`LlmCompletionError`] variants raised by the resolver
+    /// or the selected backend adapter.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    pub fn complete_streaming(
+        &self,
+        provider_config: &ProviderConfig,
+        request: LlmCompletionRequest,
+    ) -> impl Stream<Item = Result<LlmStreamEvent, LlmCompletionError>> + '_ {
+        let provider_config = provider_config.clone();
+        stream::once(async move {
+            let response = self.complete_inner(&provider_config, request).await?;
+            Ok(LlmStreamEvent::Final(Box::new(response)))
+        })
+    }
+
+    async fn complete_inner(
         &self,
         provider_config: &ProviderConfig,
         request: LlmCompletionRequest,

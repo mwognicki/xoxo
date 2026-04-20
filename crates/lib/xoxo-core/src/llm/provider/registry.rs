@@ -187,7 +187,7 @@ impl ProviderRegistry {
 mod tests {
     use super::*;
     use crate::chat::structs::ApiCompatibility;
-    use crate::config::{CodeQualityConfig, Config, CustomProviderCompatibility};
+    use crate::config::CustomProviderCompatibility;
 
     #[test]
     fn resolve_openai_compatible_provider_without_ai_lib() {
