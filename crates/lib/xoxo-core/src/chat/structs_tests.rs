@@ -151,7 +151,7 @@ fn chat_is_serde_ready() {
                         arguments: serde_json::json!({
                             "path": "src/main.rs",
                         }),
-                        kind: ToolCallKind::Generic,
+                        tool_call_kind: ToolCallKind::Generic,
                     })),
                     observability: Some(CostObservability {
                         model_name: None,
@@ -257,7 +257,7 @@ fn started_tool_call_with_kind_is_serde_ready() {
                 "task": "Inspect src/main.rs",
                 "tools": ["read_file"],
             }),
-            kind: ToolCallKind::SpawnSubagent {
+            tool_call_kind: ToolCallKind::SpawnSubagent {
                 child_chat_id: Uuid::from_u128(2),
                 child_path: ChatPath(vec![Uuid::from_u128(1), Uuid::from_u128(2)]),
                 spec_summary: "Inspect src/main.rs with read-only tools".to_string(),

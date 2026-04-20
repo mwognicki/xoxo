@@ -21,6 +21,8 @@ fn user_facing_chat_shows_active_branch_without_history_or_internal_events() {
     let view = to_user_facing_chat(&chat);
 
     assert_eq!(view.current_model_name, "claude-sonnet-4");
+    assert_eq!(view.total_input_tokens, 10);
+    assert_eq!(view.total_output_tokens, 20);
     assert_eq!(view.total_used_tokens, 36);
     assert_eq!(
         view.parent_branch,
@@ -67,6 +69,8 @@ fn user_facing_chat_falls_back_to_summed_tokens_when_chat_total_is_missing() {
 
     let view = to_user_facing_chat(&chat);
 
+    assert_eq!(view.total_input_tokens, 14);
+    assert_eq!(view.total_output_tokens, 10);
     assert_eq!(view.total_used_tokens, 24);
 }
 

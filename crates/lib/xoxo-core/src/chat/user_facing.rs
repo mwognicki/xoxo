@@ -6,6 +6,8 @@ use super::structs::{AppEvent, Chat, ChatEventBody, ChatTextRole, MessageContext
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UserFacingChat {
     pub current_model_name: String,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
     pub total_used_tokens: u64,
     pub parent_branch: Option<UserFacingParentBranch>,
     pub compaction: Option<UserFacingCompaction>,
@@ -76,22 +78,59 @@ pub fn to_user_facing_chat(chat: &Chat) -> UserFacingChat {
         .find(|branch| branch.id == chat.active_branch_id);
 
     let current_model_name = derive_current_model_name(chat);
-    let total_used_tokens = chat
+    let (total_input_tokens, total_output_tokens, total_used_tokens) = chat
         .observability
         .as_ref()
-        .map(|observability| observability.usage.total_tokens)
+        .map(|observability| {
+            (
+                observability.usage.input_tokens,
+                observability.usage.output_tokens,
+                observability.usage.total_tokens,
+            )
+        })
         .unwrap_or_else(|| {
-            chat.snapshots
+            let snapshot_input_tokens = chat
+                .snapshots
+                .iter()
+                .filter_map(|snapshot| snapshot.observability.as_ref())
+                .map(|observability| observability.usage.input_tokens)
+                .sum::<u64>();
+            let snapshot_output_tokens = chat
+                .snapshots
+                .iter()
+                .filter_map(|snapshot| snapshot.observability.as_ref())
+                .map(|observability| observability.usage.output_tokens)
+                .sum::<u64>();
+            let snapshot_total_tokens = chat
+                .snapshots
                 .iter()
                 .filter_map(|snapshot| snapshot.observability.as_ref())
                 .map(|observability| observability.usage.total_tokens)
-                .sum::<u64>()
-                + chat
-                    .events
-                    .iter()
-                    .filter_map(|entry| entry.event.observability.as_ref())
-                    .map(|observability| observability.usage.total_tokens)
-                    .sum::<u64>()
+                .sum::<u64>();
+            let event_input_tokens = chat
+                .events
+                .iter()
+                .filter_map(|entry| entry.event.observability.as_ref())
+                .map(|observability| observability.usage.input_tokens)
+                .sum::<u64>();
+            let event_output_tokens = chat
+                .events
+                .iter()
+                .filter_map(|entry| entry.event.observability.as_ref())
+                .map(|observability| observability.usage.output_tokens)
+                .sum::<u64>();
+            let event_total_tokens = chat
+                .events
+                .iter()
+                .filter_map(|entry| entry.event.observability.as_ref())
+                .map(|observability| observability.usage.total_tokens)
+                .sum::<u64>();
+
+            (
+                snapshot_input_tokens + event_input_tokens,
+                snapshot_output_tokens + event_output_tokens,
+                snapshot_total_tokens + event_total_tokens,
+            )
         });
 
     let parent_branch = active_branch.and_then(|branch| {
@@ -154,6 +193,8 @@ pub fn to_user_facing_chat(chat: &Chat) -> UserFacingChat {
 
     UserFacingChat {
         current_model_name,
+        total_input_tokens,
+        total_output_tokens,
         total_used_tokens,
         parent_branch,
         compaction,

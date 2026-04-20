@@ -9,6 +9,7 @@ use crate::chat::structs::{
 use crate::config::ProviderConfig;
 use crate::llm::{LlmCompletionRequest, LlmCompletionResponse, LlmFacade, LlmToolCall};
 use crate::llm::LlmFinishReason;
+use crate::storage::{Storage, StorageError, bootstrap_storage};
 use crate::tooling::{
     BashOptions, ToolContext, ToolError, ToolExecutionContext, ToolRegistry, ToolSet,
 };
@@ -30,6 +31,8 @@ pub enum SpawnError {
     InvalidInput { message: String },
     #[error("failed to initialize root execution context: {message}")]
     ExecutionContextInitialization { message: String },
+    #[error("storage operation failed: {message}")]
+    Storage { message: String },
     #[error("subagent handoff channel closed")]
     HandoffChannelClosed,
 }
@@ -87,6 +90,7 @@ pub struct AgentSpawner {
     self_weak: Weak<Self>,
     registry: Arc<Mutex<HandleRegistry>>,
     persisted_chats: Arc<Mutex<HashMap<Uuid, Chat>>>,
+    storage: Arc<Storage>,
     tree_execution_contexts: Arc<Mutex<HashMap<Uuid, Arc<ToolExecutionContext>>>>,
     tool_registry: Arc<ToolRegistry>,
     events: broadcast::Sender<BusEvent>,
@@ -100,11 +104,20 @@ impl AgentSpawner {
     }
 
     pub fn new_with_events(events: broadcast::Sender<BusEvent>) -> Arc<Self> {
+        let storage = bootstrap_storage()
+            .expect("default xoxo storage must be available before creating AgentSpawner");
+        Self::new_with_events_and_storage(events, Arc::new(storage))
+    }
 
+    pub fn new_with_events_and_storage(
+        events: broadcast::Sender<BusEvent>,
+        storage: Arc<Storage>,
+    ) -> Arc<Self> {
         Arc::new_cyclic(|self_weak| Self {
             self_weak: self_weak.clone(),
             registry: Arc::new(Mutex::new(HandleRegistry::new())),
             persisted_chats: Arc::new(Mutex::new(HashMap::new())),
+            storage,
             tree_execution_contexts: Arc::new(Mutex::new(HashMap::new())),
             tool_registry: Arc::new(ToolRegistry::new()),
             events,
@@ -170,10 +183,8 @@ impl AgentSpawner {
         let root_chat = self.build_root_chat_shell(chat_id, &blueprint);
         let (command_tx, command_rx) = mpsc::channel(64);
 
-        self.persisted_chats
-            .lock()
-            .await
-            .insert(chat_id, root_chat.clone());
+        self.persist_chat_snapshot(&root_chat).await;
+        let _ = self.storage.set_last_used_chat_id(chat_id);
 
         let handle: Arc<dyn AgentHandle> =
             Arc::new(LocalAgentHandle::new(chat_id, path.clone(), command_tx.clone()));
@@ -192,6 +203,7 @@ impl AgentSpawner {
             path: path.clone(),
             handoff_tx: None,
             provider_config: Some(provider_config),
+            storage: self.storage.clone(),
         };
 
         let spawner = self
@@ -214,6 +226,61 @@ impl AgentSpawner {
             .map_err(|_| SpawnError::Unavailable)?;
 
         Ok(handle)
+    }
+
+    pub async fn restore_root(
+        &self,
+        chat_id: Uuid,
+        provider_config: ProviderConfig,
+    ) -> Result<Option<Arc<dyn AgentHandle>>, SpawnError> {
+        let Some(chat) = self.storage.load_chat(chat_id).map_err(map_storage_error)? else {
+            return Ok(None);
+        };
+
+        if chat.parent_chat_id.is_some() {
+            return Ok(None);
+        }
+
+        let path = ChatPath(vec![chat_id]);
+        let execution_context = Some(self.ensure_root_execution_context(chat_id).await?);
+        let resolved_tools = self.resolve_tools(&chat.agent.allowed_tools)?;
+        let (command_tx, command_rx) = mpsc::channel(64);
+
+        self.persist_chat_snapshot(&chat).await;
+        let _ = self.storage.set_last_used_chat_id(chat_id);
+
+        let handle: Arc<dyn AgentHandle> =
+            Arc::new(LocalAgentHandle::new(chat_id, path.clone(), command_tx));
+        self.registry.lock().await.insert(handle.clone());
+
+        let runner = AgentRunner {
+            inbound: command_rx,
+            history: chat.clone(),
+            blueprint: chat.agent.clone(),
+            tool_set: resolved_tools,
+            tool_context: ToolContext {
+                execution_context: execution_context.clone(),
+                spawner: Some(self.as_dyn_spawner()),
+            },
+            events: self.events.clone(),
+            path: path.clone(),
+            handoff_tx: None,
+            provider_config: Some(provider_config),
+            storage: self.storage.clone(),
+        };
+
+        let spawner = self
+            .self_weak
+            .upgrade()
+            .expect("AgentSpawner self weak reference must upgrade");
+        tokio::spawn(async move {
+            let final_chat = runner.run().await;
+            spawner
+                .cleanup_after_runner(final_chat, chat_id, path, execution_context)
+                .await;
+        });
+
+        Ok(Some(handle))
     }
 
     pub async fn spawn_and_await(
@@ -242,10 +309,7 @@ impl AgentSpawner {
             .get(input.parent_path.root_id())
             .cloned();
 
-        self.persisted_chats
-            .lock()
-            .await
-            .insert(child_chat_id, child_chat.clone());
+        self.persist_chat_snapshot(&child_chat).await;
 
         let handle: Arc<dyn AgentHandle> = Arc::new(LocalAgentHandle::new(
             child_chat_id,
@@ -267,6 +331,7 @@ impl AgentSpawner {
             path: child_path.clone(),
             handoff_tx,
             provider_config: None,
+            storage: self.storage.clone(),
         };
 
         let spawner = self
@@ -382,7 +447,11 @@ impl AgentSpawner {
         path: ChatPath,
         execution_context: Option<Arc<ToolExecutionContext>>,
     ) {
-        self.persisted_chats.lock().await.insert(chat_id, final_chat);
+        self.persisted_chats
+            .lock()
+            .await
+            .insert(chat_id, final_chat.clone());
+        let _ = self.storage.save_chat(&final_chat);
 
         let subtree_empty = {
             let mut registry = self.registry.lock().await;
@@ -399,6 +468,11 @@ impl AgentSpawner {
                 .await
                 .remove(path.root_id());
         }
+    }
+
+    async fn persist_chat_snapshot(&self, chat: &Chat) {
+        self.persisted_chats.lock().await.insert(chat.id, chat.clone());
+        let _ = self.storage.save_chat(chat);
     }
 }
 
@@ -470,6 +544,7 @@ struct AgentRunner {
     path: ChatPath,
     handoff_tx: Option<oneshot::Sender<SubagentHandoff>>,
     provider_config: Option<ProviderConfig>,
+    storage: Arc<Storage>,
 }
 
 impl AgentRunner {
@@ -478,7 +553,7 @@ impl AgentRunner {
             match command {
                 Command::SubmitUserMessage { .. } => {}
                 Command::SendUserMessage { message, .. } => {
-                    self.push_message_event(message.clone());
+                    self.push_message_event(message.clone(), None);
                     let _ = self.events.send(BusEnvelope {
                         path: self.path.clone(),
                         payload: BusPayload::Message(message.clone()),
@@ -491,7 +566,10 @@ impl AgentRunner {
                     let mut next_message;
                     loop {
                         let completion = self.complete().await;
-                        self.push_message_event(completion.message.clone());
+                        self.push_message_event(
+                            completion.message.clone(),
+                            completion.observability.clone(),
+                        );
                         let _ = self.events.send(BusEnvelope {
                             path: self.path.clone(),
                             payload: BusPayload::Message(completion.message.clone()),
@@ -512,7 +590,7 @@ impl AgentRunner {
                             role: ChatTextRole::User,
                             content: tool_result,
                         };
-                        self.push_message_event(next_message.clone());
+                        self.push_message_event(next_message.clone(), None);
                     }
                 }
                 Command::Shutdown { .. } => {
@@ -630,33 +708,39 @@ impl AgentRunner {
             let tool_call_id = ChatToolCallId(Uuid::new_v4().to_string());
             let arguments = call.arguments.clone().unwrap_or(serde_json::Value::Null);
 
-            self.push_tool_call_event(ToolCallEvent::Started(ToolCallStarted {
-                tool_call_id: tool_call_id.clone(),
-                tool_name: call.name.clone(),
-                arguments: arguments.clone(),
-                kind: ToolCallKind::Generic,
-            }));
+            self.push_tool_call_event(
+                ToolCallEvent::Started(ToolCallStarted {
+                    tool_call_id: tool_call_id.clone(),
+                    tool_name: call.name.clone(),
+                    arguments: arguments.clone(),
+                    tool_call_kind: ToolCallKind::Generic,
+                }),
+                None,
+            );
             let _ = self.events.send(BusEnvelope {
                 path: self.path.clone(),
                 payload: BusPayload::ToolCall(ToolCallEvent::Started(ToolCallStarted {
                     tool_call_id: tool_call_id.clone(),
                     tool_name: call.name.clone(),
                     arguments: arguments.clone(),
-                    kind: ToolCallKind::Generic,
+                    tool_call_kind: ToolCallKind::Generic,
                 })),
             });
 
             let tool = self.tool_set.get(&call.name);
             let outcome = match tool {
-                Some(tool) => tool.execute_erased(&self.tool_context, arguments).await,
+                Some(tool) => tool
+                    .execute_erased_with_observability(&self.tool_context, arguments)
+                    .await,
                 None => Err(ToolError::ExecutionFailed(format!(
                     "unknown tool: {}",
                     call.name
                 ))),
             };
 
-            let (chat_event, bus_event, rendered_line) = match outcome {
-                Ok(value) => {
+            let (chat_event, bus_event, rendered_line, observability) = match outcome {
+                Ok(result) => {
+                    let value = result.output;
                     let preview = tool
                         .map(|tool| tool.map_to_preview(&value))
                         .unwrap_or_else(|| value.to_string());
@@ -673,6 +757,7 @@ impl AgentRunner {
                             result_preview: preview.clone(),
                         }),
                         format!("{}: {}", call.name, rendered_value),
+                        result.observability,
                     )
                 }
                 Err(error) => {
@@ -692,11 +777,12 @@ impl AgentRunner {
                             message: message.clone(),
                         }),
                         format!("{} failed: {}", call.name, message),
+                        None,
                     )
                 }
             };
 
-            self.push_tool_call_event(chat_event);
+            self.push_tool_call_event(chat_event, observability);
             let _ = self.events.send(BusEnvelope {
                 path: self.path.clone(),
                 payload: BusPayload::ToolCall(bus_event),
@@ -710,7 +796,11 @@ impl AgentRunner {
         rendered
     }
 
-    fn push_tool_call_event(&mut self, event: ToolCallEvent) {
+    fn push_tool_call_event(
+        &mut self,
+        event: ToolCallEvent,
+        observability: Option<crate::chat::structs::CostObservability>,
+    ) {
         let next_id = MessageId(Uuid::new_v4().to_string());
         let parent_id = self.history.events.last().map(|entry| entry.event.id.clone());
 
@@ -720,7 +810,7 @@ impl AgentRunner {
                 parent_id,
                 branch_id: self.history.active_branch_id.clone(),
                 body: ChatEventBody::ToolCall(event),
-                observability: None,
+                observability,
             },
             context_state: MessageContextState::Active,
         });
@@ -733,9 +823,15 @@ impl AgentRunner {
         {
             branch.head_message_id = Some(next_id);
         }
+
+        self.persist_history_snapshot();
     }
 
-    fn push_message_event(&mut self, message: ChatTextMessage) {
+    fn push_message_event(
+        &mut self,
+        message: ChatTextMessage,
+        observability: Option<crate::chat::structs::CostObservability>,
+    ) {
         let next_id = MessageId(Uuid::new_v4().to_string());
         let parent_id = self.history.events.last().map(|entry| entry.event.id.clone());
 
@@ -745,7 +841,7 @@ impl AgentRunner {
                 parent_id,
                 branch_id: self.history.active_branch_id.clone(),
                 body: ChatEventBody::Message(message),
-                observability: None,
+                observability,
             },
             context_state: MessageContextState::Active,
         });
@@ -758,5 +854,33 @@ impl AgentRunner {
         {
             branch.head_message_id = Some(next_id);
         }
+
+        self.persist_history_snapshot();
+    }
+
+    fn persist_history_snapshot(&self) {
+        if let Err(error) = self.storage.save_chat(&self.history) {
+            let _ = self.events.send(BusEnvelope {
+                path: self.path.clone(),
+                payload: BusPayload::Error(crate::bus::ErrorPayload {
+                    message: format!("failed to persist chat snapshot: {error}"),
+                }),
+            });
+        }
+
+        if let Err(error) = self.storage.set_last_used_chat_id(*self.path.root_id()) {
+            let _ = self.events.send(BusEnvelope {
+                path: self.path.clone(),
+                payload: BusPayload::Error(crate::bus::ErrorPayload {
+                    message: format!("failed to persist last used chat id: {error}"),
+                }),
+            });
+        }
+    }
+}
+
+fn map_storage_error(error: StorageError) -> SpawnError {
+    SpawnError::Storage {
+        message: error.to_string(),
     }
 }

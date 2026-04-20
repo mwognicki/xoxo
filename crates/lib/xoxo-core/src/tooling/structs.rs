@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use crate::agents::Spawner;
+use crate::chat::structs::CostObservability;
 use serde::{Deserialize, Serialize};
 use crate::tooling::execution_context::{ToolExecutionContext};
 
@@ -14,6 +15,21 @@ pub enum ToolError {
     InvalidInput(String),
     /// The tool ran but encountered a runtime failure.
     ExecutionFailed(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolExecutionResult {
+    pub output: serde_json::Value,
+    pub observability: Option<CostObservability>,
+}
+
+impl ToolExecutionResult {
+    pub fn without_observability(output: serde_json::Value) -> Self {
+        Self {
+            output,
+            observability: None,
+        }
+    }
 }
 
 
@@ -45,6 +61,20 @@ pub trait Tool: Send + Sync {
     /// result to the agent runtime.
     fn map_to_preview(&self, output: &serde_json::Value) -> String {
         output.to_string()
+    }
+
+    /// Execute the tool and optionally return observability metadata together
+    /// with the output payload.
+    fn execute_with_observability(
+        &self,
+        ctx: &ToolContext,
+        input: serde_json::Value,
+    ) -> impl Future<Output = Result<ToolExecutionResult, ToolError>> + Send {
+        async move {
+            self.execute(ctx, input)
+                .await
+                .map(ToolExecutionResult::without_observability)
+        }
     }
 
     /// Execute the tool with the given context and JSON input.

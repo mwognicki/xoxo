@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use crate::tooling::{Tool, ToolContext, ToolError, ToolSchema};
+use crate::tooling::{Tool, ToolContext, ToolError, ToolExecutionResult, ToolSchema};
 
 /// Object-safe wrapper around [`Tool`].
 ///
@@ -20,6 +20,12 @@ pub trait ErasedTool: Send + Sync {
         ctx: &'a ToolContext,
         input: serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, ToolError>> + Send + 'a>>;
+
+    fn execute_erased_with_observability<'a>(
+        &'a self,
+        ctx: &'a ToolContext,
+        input: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<ToolExecutionResult, ToolError>> + Send + 'a>>;
 }
 
 impl<T: Tool> ErasedTool for T {
@@ -37,6 +43,14 @@ impl<T: Tool> ErasedTool for T {
         input: serde_json::Value,
     ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, ToolError>> + Send + 'a>> {
         Box::pin(Tool::execute(self, ctx, input))
+    }
+
+    fn execute_erased_with_observability<'a>(
+        &'a self,
+        ctx: &'a ToolContext,
+        input: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Result<ToolExecutionResult, ToolError>> + Send + 'a>> {
+        Box::pin(Tool::execute_with_observability(self, ctx, input))
     }
 }
 

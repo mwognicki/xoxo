@@ -18,7 +18,9 @@ use ratatui::{
 use ratatui::layout::{Alignment, Position};
 use ratatui::widgets::TitlePosition;
 use xoxo_core::bus::BusPayload;
-use xoxo_core::chat::structs::{ChatTextRole, ToolCallEvent, ToolCallStarted};
+use xoxo_core::chat::structs::{
+    ChatTextRole, ChatToolCallId, ToolCallEvent, ToolCallStarted,
+};
 
 use crate::app::{App, HistoryEntry, LayoutMode};
 use crate::tool_format;
@@ -180,6 +182,24 @@ fn should_prepend_spacing(previous_entry: Option<&HistoryEntry>, entry: &History
     previous_entry.is_some() && !is_tool_result_entry(entry)
 }
 
+fn has_matching_tool_start(app: &App, tool_call_id: &ChatToolCallId) -> bool {
+    app.history.iter().any(|entry| {
+        matches!(
+            &entry.payload,
+            BusPayload::ToolCall(ToolCallEvent::Started(started))
+                if &started.tool_call_id == tool_call_id
+        )
+    })
+}
+
+fn render_tool_outcome_lines(app: &App, started: &ToolCallStarted) -> Vec<Line<'static>> {
+    match tool_outcome(app, started) {
+        Some(ToolCallEvent::Completed(completed)) => tool_format::format_completed(app, completed),
+        Some(ToolCallEvent::Failed(failed)) => tool_format::format_failed(app, failed),
+        Some(ToolCallEvent::Started(_)) | None => Vec::new(),
+    }
+}
+
 fn render_plain_payload(app: &App, entry: &HistoryEntry) -> Vec<Line<'static>> {
     match &entry.payload {
         BusPayload::Message(message) => message
@@ -195,13 +215,23 @@ fn render_plain_payload(app: &App, entry: &HistoryEntry) -> Vec<Line<'static>> {
             })
             .collect(),
         BusPayload::ToolCall(ToolCallEvent::Started(started)) => {
-            tool_format::format_started(app, started)
+            let mut lines = tool_format::format_started(app, started);
+            lines.extend(render_tool_outcome_lines(app, started));
+            lines
         }
         BusPayload::ToolCall(ToolCallEvent::Completed(completed)) => {
-            tool_format::format_completed(app, completed)
+            if has_matching_tool_start(app, &completed.tool_call_id) {
+                Vec::new()
+            } else {
+                tool_format::format_completed(app, completed)
+            }
         }
         BusPayload::ToolCall(ToolCallEvent::Failed(failed)) => {
-            tool_format::format_failed(app, failed)
+            if has_matching_tool_start(app, &failed.tool_call_id) {
+                Vec::new()
+            } else {
+                tool_format::format_failed(app, failed)
+            }
         }
         BusPayload::Turn(_) => Vec::new(),
         BusPayload::AgentShutdown => vec![prefixed_plain_line("shutdown")],
@@ -544,6 +574,10 @@ pub fn draw(frame: &mut Frame, mode: LayoutMode, app: &App) {
                 .replace("{PWD}", &current_dir)
                 .replace("{MODEL}", &app.current_model_name)
                 .replace("{PROVIDER}", &app.current_provider_name)
+                .replace("{INPUT_TOKENS}", &app.total_input_tokens.to_string())
+                .replace("{OUTPUT_TOKENS}", &app.total_output_tokens.to_string())
+                .replace("{CONTEXT_LEFT}", &format_context_left(app.context_left_percent))
+                .replace("{EST_COST}", &format_estimated_cost(app.estimated_cost_usd))
                 .replace("\\033[", "\x1b[")
                 .replace("/\\","\x1b[38;5;235m/\\\x1b[0m")
                 .replace("\\","\x1b[38;5;235m\\\x1b[0m")
@@ -703,5 +737,123 @@ pub fn draw(frame: &mut Frame, mode: LayoutMode, app: &App) {
 
             frame.render_widget(paragraph, area);
         }
+    }
+}
+
+fn format_context_left(context_left_percent: Option<u8>) -> String {
+    context_left_percent
+        .map(|percent| format!("{percent}% left"))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+fn format_estimated_cost(estimated_cost_usd: Option<f32>) -> String {
+    estimated_cost_usd
+        .map(|cost| format!("~${cost:.4}"))
+        .unwrap_or_else(|| "n/a".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::time::Instant;
+    use uuid::Uuid;
+    use xoxo_core::bus::BusPayload;
+    use xoxo_core::chat::structs::{ChatToolCallId, ToolCallCompleted, ToolCallEvent, ToolCallStarted};
+
+    fn test_app_with_history(history: Vec<HistoryEntry>) -> App {
+        App {
+            running: true,
+            layout: LayoutMode::Main,
+            input: String::new(),
+            active_chat_id: Some(Uuid::new_v4()),
+            pending_submission: None,
+            current_provider_name: "test-provider".to_string(),
+            current_model_name: "test-model".to_string(),
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_used_tokens: 0,
+            context_left_percent: None,
+            max_input_tokens: None,
+            estimated_cost_usd: None,
+            history,
+            conversation_scroll_from_bottom: 0,
+            modal_content: None,
+            ctrl_c_count: 0,
+            started_at: Instant::now(),
+            turn_in_progress: false,
+            last_turn_finish_reason: None,
+        }
+    }
+
+    #[test]
+    fn started_tool_call_renders_matching_result_once() {
+        let tool_call_id = ChatToolCallId("tool-1".to_string());
+        let started = ToolCallStarted {
+            tool_call_id: tool_call_id.clone(),
+            tool_name: "read_file".to_string(),
+            arguments: serde_json::json!({ "path": "Cargo.toml" }),
+            tool_call_kind: xoxo_core::chat::structs::ToolCallKind::Generic,
+        };
+        let completed = ToolCallCompleted {
+            tool_call_id: tool_call_id.clone(),
+            tool_name: "read_file".to_string(),
+            result_preview: "done".to_string(),
+        };
+        let app = test_app_with_history(vec![
+            HistoryEntry {
+                chat_id: Uuid::new_v4(),
+                payload: BusPayload::ToolCall(ToolCallEvent::Started(started.clone())),
+            },
+            HistoryEntry {
+                chat_id: Uuid::new_v4(),
+                payload: BusPayload::ToolCall(ToolCallEvent::Completed(completed)),
+            },
+        ]);
+
+        let started_lines = render_plain_payload(
+            &app,
+            &HistoryEntry {
+                chat_id: Uuid::new_v4(),
+                payload: BusPayload::ToolCall(ToolCallEvent::Started(started)),
+            },
+        );
+
+        assert_eq!(started_lines.len(), 2);
+        assert!(started_lines[1].spans[0].content.contains("done"));
+    }
+
+    #[test]
+    fn completed_tool_call_is_hidden_when_start_exists() {
+        let tool_call_id = ChatToolCallId("tool-1".to_string());
+        let app = test_app_with_history(vec![
+            HistoryEntry {
+                chat_id: Uuid::new_v4(),
+                payload: BusPayload::ToolCall(ToolCallEvent::Started(ToolCallStarted {
+                    tool_call_id: tool_call_id.clone(),
+                    tool_name: "read_file".to_string(),
+                    arguments: serde_json::json!({}),
+                    tool_call_kind: xoxo_core::chat::structs::ToolCallKind::Generic,
+                })),
+            },
+            HistoryEntry {
+                chat_id: Uuid::new_v4(),
+                payload: BusPayload::ToolCall(ToolCallEvent::Completed(ToolCallCompleted {
+                    tool_call_id: tool_call_id.clone(),
+                    tool_name: "read_file".to_string(),
+                    result_preview: "done".to_string(),
+                })),
+            },
+        ]);
+        let completed_entry = HistoryEntry {
+            chat_id: Uuid::new_v4(),
+            payload: BusPayload::ToolCall(ToolCallEvent::Completed(ToolCallCompleted {
+                tool_call_id,
+                tool_name: "read_file".to_string(),
+                result_preview: "done".to_string(),
+            })),
+        };
+
+        assert!(render_plain_payload(&app, &completed_entry).is_empty());
     }
 }

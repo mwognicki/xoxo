@@ -239,7 +239,7 @@ pub struct ToolCallStarted {
     pub tool_call_id: ChatToolCallId,
     pub tool_name: String,
     pub arguments: serde_json::Value,
-    pub kind: ToolCallKind,
+    pub tool_call_kind: ToolCallKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

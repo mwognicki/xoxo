@@ -38,6 +38,8 @@ url = "2.5.8"
 nix = { version = "0.31", features = ["signal"] }
 toml-example = "0.16"
 rig-core = "0.35.0"
+sled = "0.34.7"
+llm_models_spider = "0.1.80"
 
 
 [dev-dependencies]

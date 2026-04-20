@@ -7,14 +7,19 @@ use xoxo_core::app_state::AppStateRepository;
 use xoxo_core::bus::{Bus, BusEnvelope, BusPayload, Command, CommandInbox, ErrorPayload};
 use xoxo_core::chat::structs::{ChatAgent, ChatPath, ChatTextMessage};
 use xoxo_core::config::{ProviderConfig, load_config};
+use xoxo_core::storage::Storage;
 use xoxo_core::tooling::ToolRegistry;
 use uuid::Uuid;
 
 #[cfg(feature = "tui")]
 use tokio::sync::broadcast;
 
-pub async fn run_daemon(bus: Bus, mut inbox: CommandInbox) -> Result<()> {
-    let spawner = AgentSpawner::new_with_events(bus.events_sender());
+pub async fn run_daemon(
+    bus: Bus,
+    mut inbox: CommandInbox,
+    storage: Arc<Storage>,
+) -> Result<()> {
+    let spawner = AgentSpawner::new_with_events_and_storage(bus.events_sender(), storage.clone());
     let mut root_handles: HashMap<Uuid, Arc<dyn AgentHandle>> = HashMap::new();
 
     while let Some(command) = inbox.recv().await {
@@ -22,7 +27,16 @@ pub async fn run_daemon(bus: Bus, mut inbox: CommandInbox) -> Result<()> {
             Command::SubmitUserMessage {
                 active_chat_id,
                 message,
-            } => handle_submit_user_message(&mut root_handles, &spawner, active_chat_id, message).await,
+            } => {
+                handle_submit_user_message(
+                    &mut root_handles,
+                    &spawner,
+                    storage.as_ref(),
+                    active_chat_id,
+                    message,
+                )
+                .await
+            }
             Command::SendUserMessage { path, message } => {
                 publish_message(&bus, path, message);
                 Ok(())
@@ -47,6 +61,7 @@ pub async fn run_daemon(bus: Bus, mut inbox: CommandInbox) -> Result<()> {
 async fn handle_submit_user_message(
     root_handles: &mut HashMap<Uuid, Arc<dyn AgentHandle>>,
     spawner: &Arc<AgentSpawner>,
+    storage: &Storage,
     active_chat_id: Option<Uuid>,
     message: ChatTextMessage,
 ) -> Result<()> {
@@ -57,6 +72,19 @@ async fn handle_submit_user_message(
 
     if let Some(chat_id) = active_chat_id {
         if let Some(handle) = root_handles.get(&chat_id) {
+            storage.set_last_used_chat_id(chat_id)?;
+            return handle
+                .send(Command::SendUserMessage {
+                    path: handle.path().clone(),
+                    message,
+                })
+                .await
+                .map_err(anyhow::Error::from);
+        }
+
+        if let Some(handle) = spawner.restore_root(chat_id, provider_config.clone()).await? {
+            storage.set_last_used_chat_id(chat_id)?;
+            root_handles.insert(chat_id, handle.clone());
             return handle
                 .send(Command::SendUserMessage {
                     path: handle.path().clone(),
@@ -81,6 +109,7 @@ async fn handle_submit_user_message(
     let handle = spawner
         .spawn_root(chat_id, blueprint, message, provider_config)
         .await?;
+    storage.set_last_used_chat_id(chat_id)?;
     root_handles.insert(chat_id, handle);
 
     Ok(())
@@ -120,8 +149,12 @@ fn publish_error(bus: &Bus, path: ChatPath, message: String) {
     });
 }
 
-pub async fn run_daemon_until_shutdown(bus: Bus, inbox: CommandInbox) -> Result<()> {
-    let daemon = tokio::spawn(run_daemon(bus, inbox));
+pub async fn run_daemon_until_shutdown(
+    bus: Bus,
+    inbox: CommandInbox,
+    storage: Arc<Storage>,
+) -> Result<()> {
+    let daemon = tokio::spawn(run_daemon(bus, inbox, storage));
     tokio::select! {
         result = daemon => result??,
         _ = tokio::signal::ctrl_c() => {}
@@ -130,8 +163,12 @@ pub async fn run_daemon_until_shutdown(bus: Bus, inbox: CommandInbox) -> Result<
 }
 
 #[cfg(feature = "tui")]
-pub fn spawn_daemon(bus: Bus, inbox: CommandInbox) -> tokio::task::JoinHandle<Result<()>> {
-    tokio::spawn(run_daemon(bus, inbox))
+pub fn spawn_daemon(
+    bus: Bus,
+    inbox: CommandInbox,
+    storage: Arc<Storage>,
+) -> tokio::task::JoinHandle<Result<()>> {
+    tokio::spawn(run_daemon(bus, inbox, storage))
 }
 
 #[cfg(feature = "tui")]
