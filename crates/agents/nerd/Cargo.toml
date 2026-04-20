@@ -20,6 +20,8 @@ futures = { workspace = true }
 tempfile = "3.8"
 md5 = "0.8"
 inventory = "0.3.24"
+ignore = "0.4"
+regex = "1"
 
 [lints]
 workspace = true

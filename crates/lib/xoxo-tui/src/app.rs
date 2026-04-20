@@ -2,10 +2,18 @@
 
 use anyhow::Result;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
+use std::time::Instant;
 use uuid::Uuid;
 use xoxo_core::app_state::AppStateRepository;
-use xoxo_core::bus::{BusEvent, BusPayload};
-use xoxo_core::chat::structs::{ChatTextRole, ToolCallCompleted, ToolCallEvent, ToolCallFailed, ToolCallStarted};
+use xoxo_core::bus::{BusEvent, BusPayload, TurnEvent};
+use xoxo_core::chat::structs::ChatTextRole;
+use xoxo_core::llm::LlmFinishReason;
+
+#[derive(Debug, Clone)]
+pub struct HistoryEntry {
+    pub chat_id: Uuid,
+    pub payload: BusPayload,
+}
 
 pub struct App {
     /// Controls the main loop.
@@ -22,14 +30,20 @@ pub struct App {
     pub current_provider_name: String,
     /// Current configured model shown in the header.
     pub current_model_name: String,
-    /// Conversation history (each entry is a line).
-    pub history: Vec<String>,
+    /// Conversation history as structured bus payloads for TUI-owned formatting.
+    pub history: Vec<HistoryEntry>,
     /// Manual scroll offset measured upward from the bottom of the conversation pane.
     pub conversation_scroll_from_bottom: usize,
     /// Current modal content (if any).
     pub modal_content: Option<String>,
     /// Counter for consecutive Ctrl+C presses.
     pub ctrl_c_count: u8,
+    /// Start time used for lightweight UI animations.
+    pub started_at: Instant,
+    /// Whether the active chat turn is currently in progress.
+    pub turn_in_progress: bool,
+    /// Finish reason for the most recently completed turn, if known.
+    pub last_turn_finish_reason: Option<LlmFinishReason>,
 }
 
 /// Available UI layout variants.
@@ -65,6 +79,9 @@ impl App {
             conversation_scroll_from_bottom: 0,
             modal_content: None,
             ctrl_c_count: 0,
+            started_at: Instant::now(),
+            turn_in_progress: false,
+            last_turn_finish_reason: None,
         }
     }
 
@@ -189,53 +206,30 @@ Type your message and press Enter to send.".to_string();
     pub fn handle_bus_event(&mut self, event: BusEvent) {
         let chat_id = *event.path.current();
         self.active_chat_id = Some(chat_id);
+        let payload = event.payload;
 
-        match event.payload {
+        match &payload {
+            BusPayload::Turn(TurnEvent::Started) => {
+                self.turn_in_progress = true;
+                self.last_turn_finish_reason = None;
+                return;
+            }
+            BusPayload::Turn(TurnEvent::Finished { reason }) => {
+                self.turn_in_progress = false;
+                self.last_turn_finish_reason = Some(*reason);
+                return;
+            }
             BusPayload::Message(message) => {
-                let role = match message.role {
-                    ChatTextRole::System => return,
-                    ChatTextRole::Agent => "assistant",
-                    ChatTextRole::User => "user",
-                };
-                self.history.push(format!("{role}[{chat_id}] {}", message.content));
+                if message.role == ChatTextRole::System {
+                    return;
+                }
             }
-            BusPayload::ToolCall(ToolCallEvent::Started(ToolCallStarted {
-                tool_call_id,
-                tool_name,
-                arguments,
-                ..
-            })) => {
-                self.history.push(format!(
-                    "assistant[{chat_id}] tool[{0}] {tool_name} call: {arguments}",
-                    tool_call_id.0,
-                ));
-            }
-            BusPayload::ToolCall(ToolCallEvent::Completed(ToolCallCompleted {
-                tool_call_id,
-                result_preview,
-                ..
-            })) => {
-                self.history.push(format!(
-                    "assistant[{chat_id}] tool[{0}] done: {result_preview}",
-                    tool_call_id.0,
-                ));
-            }
-            BusPayload::ToolCall(ToolCallEvent::Failed(ToolCallFailed {
-                tool_call_id,
-                message,
-                ..
-            })) => {
-                self.history.push(format!(
-                    "assistant[{chat_id}] tool[{0}] error: {message}",
-                    tool_call_id.0,
-                ));
-            }
-            BusPayload::AgentShutdown => {
-                self.history.push(format!("assistant[{chat_id}] shutdown"));
-            }
-            BusPayload::Error(error) => {
-                self.history.push(format!("assistant[{chat_id}] error: {}", error.message));
-            }
+            _ => {}
         }
+
+        self.history.push(HistoryEntry {
+            chat_id,
+            payload,
+        });
     }
 }

@@ -10,6 +10,7 @@ description = "Optional ratatui overlay for xoxo. Bus client only."
 [dependencies]
 xoxo-core = { workspace = true }
 
+serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }

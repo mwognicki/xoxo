@@ -1,6 +1,7 @@
 //! In-process message bus.
 
 use crate::chat::structs::{ChatPath, ChatTextMessage, ToolCallEvent};
+use crate::llm::LlmFinishReason;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
@@ -28,8 +29,16 @@ pub struct BusEnvelope<T> {
 pub enum BusPayload {
     Message(ChatTextMessage),
     ToolCall(ToolCallEvent),
+    Turn(TurnEvent),
     AgentShutdown,
     Error(ErrorPayload),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum TurnEvent {
+    Started,
+    Finished { reason: LlmFinishReason },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

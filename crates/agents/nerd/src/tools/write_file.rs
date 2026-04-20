@@ -29,7 +29,7 @@ impl std::fmt::Display for WriteFileError {
 }
 
 /// Result type for write_file operations
-pub type WriteFileResult = Result<(), WriteFileError>;
+pub type WriteFileResult = Result<String, WriteFileError>;
 
 #[derive(Debug, Deserialize)]
 struct WriteFileInput {
@@ -41,19 +41,21 @@ struct WriteFileInput {
 pub struct WriteFileTool;
 
 impl WriteFileTool {
-
-
     pub fn new() -> Self {
         Self
     }
 
     /// Execute the write-file tool with contract-shaped arguments.
     pub async fn execute(&self, file_path: &str, content: &str) -> Result<Value, ToolError> {
-        self.write_file_impl(file_path, content, None)
+        let checksum = self
+            .write_file_impl(file_path, content, None)
             .map_err(map_write_file_error)?;
 
         Ok(json!({
+            "message": format!("File saved: {file_path}"),
             "file_path": file_path,
+            "exists": true,
+            "md5": checksum,
             "line_count": content.lines().count(),
         }))
     }
@@ -91,6 +93,19 @@ impl Tool for WriteFileTool {
         }
     }
 
+    fn map_to_preview(&self, output: &Value) -> String {
+        let file_path = output["file_path"].as_str();
+        let checksum = output["md5"].as_str();
+
+        match (file_path, checksum) {
+            (Some(file_path), Some(checksum)) => {
+                format!("File saved: {file_path} (MD5: {checksum})")
+            }
+            (Some(file_path), None) => format!("File saved: {file_path}"),
+            _ => "File saved".to_string(),
+        }
+    }
+
     async fn execute(
         &self,
         _ctx: &ToolContext,
@@ -117,13 +132,13 @@ fn map_write_file_error(error: WriteFileError) -> ToolError {
 ///
 /// # Returns
 ///
-/// * `Ok(())` - Success
+/// * `Ok(String)` - MD5 checksum of the persisted content
 /// * `Err(WriteFileError)` - Error with reason on failure
 fn write_file_impl(
     file_path: &str,
     content: &str,
     callback: Option<fn(&str, usize) -> Result<(), String>>,
-) -> WriteFileResult {
+) -> Result<String, WriteFileError> {
     // Check if file exists
     if Path::new(file_path).exists() {
         return Err(WriteFileError::FileExists(file_path.to_string()));
@@ -135,14 +150,16 @@ fn write_file_impl(
     // Write content to file
     match fs::write(file_path, content) {
         Ok(_) => {
+            let checksum = format!("{:x}", md5::compute(content));
+
             // Execute callback if provided
             if let Some(cb) = callback {
                 match cb(file_path, line_count) {
-                    Ok(_) => Ok(()),
+                    Ok(_) => Ok(checksum),
                     Err(e) => Err(WriteFileError::CallbackError(e)),
                 }
             } else {
-                Ok(())
+                Ok(checksum)
             }
         }
         Err(e) => Err(WriteFileError::IoError(e.to_string())),
@@ -168,6 +185,7 @@ mod tests {
 
         let result = WriteFileTool.write_file_impl(file_path_str, "Test content", None);
         assert!(result.is_ok());
+        assert_eq!(result.unwrap(), format!("{:x}", md5::compute("Test content")));
         
         let content = fs::read_to_string(file_path).unwrap();
         assert_eq!(content, "Test content");
@@ -188,6 +206,7 @@ mod tests {
         CALLBACK_CALLED.store(false, Ordering::SeqCst);
         let result = WriteFileTool.write_file_impl(file_path_str, "Test content", Some(callback));
         assert!(result.is_ok());
+        assert_eq!(result.unwrap(), format!("{:x}", md5::compute("Test content")));
         assert!(CALLBACK_CALLED.load(Ordering::SeqCst));
     }
 
@@ -219,6 +238,7 @@ mod tests {
         let content = "Line 1\nLine 2\nLine 3";
         let result = WriteFileTool.write_file_impl(file_path_str, content, Some(callback));
         assert!(result.is_ok());
+        assert_eq!(result.unwrap(), format!("{:x}", md5::compute(content)));
     }
 
     #[test]
@@ -253,9 +273,22 @@ mod tests {
         ))
         .unwrap();
 
+        assert_eq!(output["message"], format!("File saved: {file_path_str}"));
         assert_eq!(output["file_path"], file_path_str);
+        assert_eq!(output["exists"], true);
+        assert_eq!(output["md5"], format!("{:x}", md5::compute("Line 1\nLine 2")));
         assert_eq!(output["line_count"], 2);
         assert_eq!(fs::read_to_string(file_path).unwrap(), "Line 1\nLine 2");
+    }
+
+    #[test]
+    fn test_map_to_preview_includes_checksum() {
+        let preview = Tool::map_to_preview(&WriteFileTool, &json!({
+            "file_path": "/tmp/example.txt",
+            "md5": "abc123",
+        }));
+
+        assert_eq!(preview, "File saved: /tmp/example.txt (MD5: abc123)");
     }
 }
 

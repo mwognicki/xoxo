@@ -8,6 +8,7 @@ use crate::chat::structs::{
 };
 use crate::config::ProviderConfig;
 use crate::llm::{LlmCompletionRequest, LlmCompletionResponse, LlmFacade, LlmToolCall};
+use crate::llm::LlmFinishReason;
 use crate::tooling::{
     BashOptions, ToolContext, ToolError, ToolExecutionContext, ToolRegistry, ToolSet,
 };
@@ -482,6 +483,10 @@ impl AgentRunner {
                         path: self.path.clone(),
                         payload: BusPayload::Message(message.clone()),
                     });
+                    let _ = self.events.send(BusEnvelope {
+                        path: self.path.clone(),
+                        payload: BusPayload::Turn(crate::bus::TurnEvent::Started),
+                    });
 
                     let mut next_message;
                     loop {
@@ -492,7 +497,13 @@ impl AgentRunner {
                             payload: BusPayload::Message(completion.message.clone()),
                         });
 
-                        if completion.tool_calls.is_empty() {
+                        if completion.finish_reason == LlmFinishReason::Stop {
+                            let _ = self.events.send(BusEnvelope {
+                                path: self.path.clone(),
+                                payload: BusPayload::Turn(crate::bus::TurnEvent::Finished {
+                                    reason: completion.finish_reason,
+                                }),
+                            });
                             break;
                         }
 
@@ -563,6 +574,7 @@ impl AgentRunner {
                         content: error.to_string(),
                     },
                     tool_calls: Vec::new(),
+                    finish_reason: LlmFinishReason::Stop,
                     observability: None,
                 },
             };
@@ -607,6 +619,7 @@ impl AgentRunner {
                 content: format!("stub completion: {last_user_message}"),
             },
             tool_calls: Vec::new(),
+            finish_reason: LlmFinishReason::Stop,
             observability: None,
         }
     }

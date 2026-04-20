@@ -27,8 +27,20 @@ pub struct LlmCompletionResponse {
     pub message: ChatTextMessage,
     /// Tool calls emitted by the assistant, if any.
     pub tool_calls: Vec<LlmToolCall>,
+    /// Provider-reported or adapter-inferred finish reason for this completion.
+    pub finish_reason: LlmFinishReason,
     /// Optional token/cost observability collected during execution.
     pub observability: Option<CostObservability>,
+}
+
+/// Normalized completion finish reasons surfaced across backend adapters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmFinishReason {
+    /// The model finished the turn normally.
+    Stop,
+    /// The model yielded tool calls and expects tool results before continuing.
+    ToolCalls,
 }
 
 /// Unified xoxo tool definition used across backend adapters.
@@ -498,7 +510,7 @@ impl LlmFacade {
                         .collect::<Vec<_>>()
                         .join("\n"),
                 };
-                let tool_calls = response
+                let tool_calls: Vec<crate::llm::LlmToolCall> = response
                     .choice
                     .iter()
                     .filter_map(|content| match content {
@@ -509,10 +521,16 @@ impl LlmFacade {
                         _ => None,
                     })
                     .collect();
+                let finish_reason = if tool_calls.is_empty() {
+                    LlmFinishReason::Stop
+                } else {
+                    LlmFinishReason::ToolCalls
+                };
 
                 Ok(LlmCompletionResponse {
                     message,
                     tool_calls,
+                    finish_reason,
                     observability: Some(CostObservability {
                         model_name: Some(request.model.model_name),
                         provider_name: Some(request.model.provider.name),
@@ -609,6 +627,21 @@ impl LlmFacade {
             .await
             .map_err(|error| LlmCompletionError::Execution(error.to_string()))?;
 
+        let tool_calls = response
+            .choices
+            .iter()
+            .filter_map(|choice| choice.message.function_call.as_ref())
+            .map(|call| crate::llm::LlmToolCall {
+                name: call.name.clone(),
+                arguments: call.arguments.clone(),
+            })
+            .collect::<Vec<_>>();
+        let finish_reason = if tool_calls.is_empty() {
+            LlmFinishReason::Stop
+        } else {
+            LlmFinishReason::ToolCalls
+        };
+
         Ok(LlmCompletionResponse {
             message: ChatTextMessage {
                 role: crate::chat::structs::ChatTextRole::Agent,
@@ -616,15 +649,8 @@ impl LlmFacade {
                     LlmCompletionError::Execution(error.to_string())
                 })?.to_string(),
             },
-            tool_calls: response
-                .choices
-                .iter()
-                .filter_map(|choice| choice.message.function_call.as_ref())
-                .map(|call| crate::llm::LlmToolCall {
-                    name: call.name.clone(),
-                    arguments: call.arguments.clone(),
-                })
-                .collect(),
+            tool_calls,
+            finish_reason,
             observability: Some(CostObservability {
                 model_name: Some(request.model.model_name),
                 provider_name: Some(request.model.provider.name),

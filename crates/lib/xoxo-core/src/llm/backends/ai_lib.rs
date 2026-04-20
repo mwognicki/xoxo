@@ -83,7 +83,7 @@ mod tests {
     use super::*;
     use crate::chat::structs::{ApiCompatibility, ApiProvider, ChatTextMessage, ChatTextRole, ModelConfig};
     use crate::llm::facade::{
-        LlmCompletionRequest, LlmCompletionResponse, LlmToolCall, LlmToolChoice,
+        LlmCompletionRequest, LlmCompletionResponse, LlmFinishReason, LlmToolCall, LlmToolChoice,
         LlmToolDefinition,
     };
 
@@ -221,6 +221,7 @@ mod tests {
                 name: "get_weather".to_string(),
                 arguments: Some(serde_json::json!({ "city": "Warsaw" })),
             }],
+            finish_reason: LlmFinishReason::ToolCalls,
             observability: None,
         };
 

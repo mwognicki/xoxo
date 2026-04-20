@@ -1,7 +1,6 @@
 //! UI layout and rendering.
 
 use std::env;
-
 use ansi_to_tui::IntoText as _;
 use comrak::{
     Arena, Options, parse_document,
@@ -18,29 +17,19 @@ use ratatui::{
 };
 use ratatui::layout::{Alignment, Position};
 use ratatui::widgets::TitlePosition;
-use crate::app::{LayoutMode, App};
+use xoxo_core::bus::BusPayload;
+use xoxo_core::chat::structs::{ChatTextRole, ToolCallEvent, ToolCallStarted};
+
+use crate::app::{App, HistoryEntry, LayoutMode};
+use crate::tool_format;
 
 const ASSISTANT_PADDING: &str = "  ";
 
-/// Parse a message line to extract role and content
-/// Expected format: "role[chat_id] content"
-fn parse_message_line(line: &str) -> Option<(&str, &str)> {
-    // Find the first space to separate role[chat_id] from content
-    if let Some(space_pos) = line.find(' ') {
-        let role_part = &line[..space_pos];
-        let content = &line[space_pos + 1..];
-        
-        // Extract role from role[chat_id]
-        if let Some(bracket_pos) = role_part.find('[') {
-            let role = &role_part[..bracket_pos];
-            return Some((role, content));
-        }
-    }
-    None
-}
-
-fn is_markdown_assistant_message(content: &str) -> bool {
-    !content.starts_with("tool[") && !content.starts_with("error:") && content != "shutdown"
+fn is_markdown_assistant_message(entry: &HistoryEntry) -> bool {
+    matches!(
+        &entry.payload,
+        BusPayload::Message(message) if message.role == ChatTextRole::Agent
+    )
 }
 
 fn assistant_padding_span() -> Span<'static> {
@@ -56,6 +45,187 @@ fn prefixed_styled_line(content: impl Into<String>, style: Style) -> Line<'stati
         assistant_padding_span(),
         Span::styled(content.into(), style),
     ])
+}
+
+fn format_tool_arguments(arguments: &impl std::fmt::Display) -> String {
+    let rendered = arguments.to_string();
+    if rendered == "null" {
+        String::new()
+    } else if rendered.starts_with('{') || rendered.starts_with('[') {
+        rendered
+    } else {
+        format!("({rendered})")
+    }
+}
+
+fn pulsing_tool_dot_style(app: &App) -> Style {
+    let phase = (app.started_at.elapsed().as_millis() / 200) % 6;
+    let color = match phase {
+        0 | 5 => Color::Indexed(238),
+        1 | 4 => Color::Indexed(241),
+        _ => Color::White,
+    };
+    let mut style = Style::default().fg(color);
+    if matches!(phase, 2 | 3) {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    style
+}
+
+fn tool_outcome<'a>(app: &'a App, started: &ToolCallStarted) -> Option<&'a ToolCallEvent> {
+    app.history.iter().find_map(|entry| match &entry.payload {
+        BusPayload::ToolCall(ToolCallEvent::Completed(completed))
+            if completed.tool_call_id == started.tool_call_id =>
+        {
+            Some(match &entry.payload {
+                BusPayload::ToolCall(event) => event,
+                _ => unreachable!(),
+            })
+        }
+        BusPayload::ToolCall(ToolCallEvent::Failed(failed))
+            if failed.tool_call_id == started.tool_call_id =>
+        {
+            Some(match &entry.payload {
+                BusPayload::ToolCall(event) => event,
+                _ => unreachable!(),
+            })
+        }
+        _ => None,
+    })
+}
+
+fn tool_dot_style(app: &App, started: &ToolCallStarted) -> Style {
+    match tool_outcome(app, started) {
+        Some(ToolCallEvent::Completed(_)) => Style::default().fg(Color::Indexed(70)),
+        Some(ToolCallEvent::Failed(_)) => Style::default().fg(Color::Indexed(160)),
+        _ => pulsing_tool_dot_style(app),
+    }
+}
+
+fn doing_indicator_style(app: &App) -> Style {
+    let phase = (app.started_at.elapsed().as_millis() / 200) % 6;
+    let color = match phase {
+        0 | 5 => Color::Indexed(166),
+        1 | 4 => Color::Indexed(172),
+        2 | 3 => Color::Indexed(202),
+        _ => Color::Indexed(208),
+    };
+    let mut style = Style::default().fg(color);
+    if matches!(phase, 2 | 3) {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    style
+}
+
+pub(crate) fn default_tool_byline(app: &App, started: &ToolCallStarted) -> Line<'static> {
+    tool_byline(app, started)
+}
+
+pub(crate) fn default_tool_result_lines(content: &str, is_error: bool) -> Vec<Line<'static>> {
+    tool_result_lines(content, is_error)
+}
+
+fn tool_byline(app: &App, started: &ToolCallStarted) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled("• ", tool_dot_style(app, started)),
+        Span::styled(
+            started.tool_name.clone(),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    let arguments = format_tool_arguments(&started.arguments);
+    if !arguments.is_empty() {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            arguments,
+            Style::default().fg(Color::Gray),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn tool_result_lines(content: &str, is_error: bool) -> Vec<Line<'static>> {
+    let style = Style::default().fg(Color::DarkGray);
+    let mut lines = Vec::new();
+
+    for (index, content_line) in content.lines().enumerate() {
+        let prefix = if index == 0 { "└ " } else { "  " };
+        let text = if is_error && index == 0 {
+            format!("{prefix}error: {content_line}")
+        } else {
+            format!("{prefix}{content_line}")
+        };
+        lines.push(Line::from(Span::styled(text, style)));
+    }
+
+    if lines.is_empty() {
+        let text = if is_error { "└ error:" } else { "└" };
+        lines.push(Line::from(Span::styled(text, style)));
+    }
+
+    lines
+}
+
+fn is_tool_result_entry(entry: &HistoryEntry) -> bool {
+    matches!(
+        entry.payload,
+        BusPayload::ToolCall(ToolCallEvent::Completed(_))
+            | BusPayload::ToolCall(ToolCallEvent::Failed(_))
+    )
+}
+
+fn should_prepend_spacing(previous_entry: Option<&HistoryEntry>, entry: &HistoryEntry) -> bool {
+    previous_entry.is_some() && !is_tool_result_entry(entry)
+}
+
+fn render_plain_payload(app: &App, entry: &HistoryEntry) -> Vec<Line<'static>> {
+    match &entry.payload {
+        BusPayload::Message(message) => message
+            .content
+            .lines()
+            .map(|content_line| {
+                let border_span = Span::styled("│", Style::default().fg(Color::Indexed(202)));
+                let content_span = Span::styled(
+                    content_line.to_string(),
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                );
+                Line::from(vec![border_span, Span::raw(" "), content_span])
+            })
+            .collect(),
+        BusPayload::ToolCall(ToolCallEvent::Started(started)) => {
+            tool_format::format_started(app, started)
+        }
+        BusPayload::ToolCall(ToolCallEvent::Completed(completed)) => {
+            tool_format::format_completed(app, completed)
+        }
+        BusPayload::ToolCall(ToolCallEvent::Failed(failed)) => {
+            tool_format::format_failed(app, failed)
+        }
+        BusPayload::Turn(_) => Vec::new(),
+        BusPayload::AgentShutdown => vec![prefixed_plain_line("shutdown")],
+        BusPayload::Error(error) => vec![prefixed_plain_line(format!("error: {}", error.message))],
+    }
+}
+
+fn collapse_blank_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    let mut collapsed = Vec::with_capacity(lines.len());
+    let mut previous_was_blank = false;
+
+    for line in lines {
+        let is_blank = line
+            .spans
+            .iter()
+            .all(|span| span.content.trim().is_empty());
+        if is_blank && previous_was_blank {
+            continue;
+        }
+        previous_was_blank = is_blank;
+        collapsed.push(line);
+    }
+
+    collapsed
 }
 
 fn render_markdown_message(content: &str) -> Vec<Line<'static>> {
@@ -399,43 +569,38 @@ pub fn draw(frame: &mut Frame, mode: LayoutMode, app: &App) {
             conversation_lines.push(Line::from(""));
             conversation_lines.push(Line::from(""));
 
-            // Add conversation history with empty lines between entries
-            for (index, line) in app.history.iter().enumerate() {
-                // Parse the line to extract role and content
-                if let Some((role, content)) = parse_message_line(line) {
-                    if role == "user" {
-                        // Format user messages with bold white text and left border
-                        // Handle multi-line content by splitting on newlines
-                        for content_line in content.lines() {
-                            let border_span = Span::styled("│", Style::default().fg(Color::Indexed(202)));
-                            let content_span = Span::styled(content_line, Style::default().fg(Color::White).add_modifier(Modifier::BOLD));
-                            let styled_line = Line::from(vec![border_span, Span::raw(" "), content_span]);
-                            conversation_lines.push(styled_line);
-                        }
-                    } else {
-                        if is_markdown_assistant_message(content) {
-                            conversation_lines.extend(render_markdown_message(content));
-                        } else {
-                            // Keep tool/error/status messages on the existing plain-text path.
-                            for content_line in content.lines() {
-                                conversation_lines.push(prefixed_plain_line(content_line));
-                            }
-                        }
-                    }
-                } else {
-                    // Fallback for unparseable lines
-                    conversation_lines.push(Line::from(line.clone()));
-                }
-                
-                if index < app.history.len() - 1 {
+            // Add conversation history with spacing controlled by the incoming entry.
+            let mut previous_entry: Option<&HistoryEntry> = None;
+            for entry in &app.history {
+                if should_prepend_spacing(previous_entry, entry) {
                     conversation_lines.push(Line::from(""));
                 }
+
+                if is_markdown_assistant_message(entry) {
+                    if let BusPayload::Message(message) = &entry.payload {
+                        conversation_lines.extend(render_markdown_message(&message.content));
+                    }
+                } else {
+                    conversation_lines.extend(render_plain_payload(app, entry));
+                }
+                previous_entry = Some(entry);
+            }
+
+            if app.turn_in_progress {
+                if previous_entry.is_some() {
+                    conversation_lines.push(Line::from(""));
+                }
+                conversation_lines.push(prefixed_styled_line(
+                    "Doing...",
+                    doing_indicator_style(app),
+                ));
             }
             
             // Add three empty lines as top margin above the input textarea
             conversation_lines.push(Line::from(""));
             conversation_lines.push(Line::from(""));
             conversation_lines.push(Line::from(""));
+            conversation_lines = collapse_blank_lines(conversation_lines);
 
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
