@@ -1,0 +1,41 @@
+# Rust
+/target
+**/*.rs.bk
+
+# IDE - VS Code
+.vscode/
+*.code-workspace
+
+# IDE - JetBrains (IntelliJ, CLion, etc.)
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# IDE - Vim/Neovim
+*.swp
+*.swo
+*~
+.netrwhist
+
+# IDE - Emacs
+\#*\#
+.\#*
+*.elc
+
+# IDE - Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log

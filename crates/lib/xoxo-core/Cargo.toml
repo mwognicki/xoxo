@@ -1,0 +1,48 @@
+[package]
+name = "xoxo-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Core library for xoxo: message bus, LLM trait, config, persistence, tool runner."
+
+[features]
+default = ["openai"]
+# LLM backends. Each is independent and pluggable through the LlmBackend trait.
+openai = ["dep:reqwest", "dep:eventsource-stream"]
+# Opt-in sink that fans `tracing` events out over the bus instead of stdout.
+# Enabled by any client that wants to consume logs as bus messages (e.g. the TUI).
+log-broadcast = ["dep:tracing-subscriber"]
+
+[dependencies]
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+syntect = "5.3"
+futures = { workspace = true }
+
+ai-lib = "0.4"
+toml = "1"
+directories = "6"
+
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"], optional = true }
+eventsource-stream = { version = "0.2", optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+sublime-syntaxes = "0.2.0"
+uuid = { version = "1.23.1", features = ["serde", "v4"] }
+inventory = "0.3.24"
+url = "2.5.8"
+nix = { version = "0.31", features = ["signal"] }
+toml-example = "0.16"
+rig-core = "0.35.0"
+
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt"] }
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -1,0 +1,25 @@
+[package]
+name = "nerd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Coding-assistant toolkit for xoxo."
+
+[features]
+default = ["extension-language-detection"]
+extension-language-detection = []
+
+[dependencies]
+xoxo-core = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures = { workspace = true }
+tempfile = "3.8"
+md5 = "0.8"
+inventory = "0.3.24"
+
+[lints]
+workspace = true

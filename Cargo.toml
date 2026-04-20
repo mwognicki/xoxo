@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/bin/xoxo",
+    "crates/lib/xoxo-core",
+    "crates/lib/xoxo-tui",
+    "crates/agents/nerd",
+    "crates/agents/concierge",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+# Internal
+xoxo-core = { path = "crates/lib/xoxo-core" }
+xoxo-tui = { path = "crates/lib/xoxo-tui" }
+nerd = { path = "crates/agents/nerd" }
+concierge = { path = "crates/agents/concierge" }
+
+# Genuinely cross-crate
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+tracing = "0.1"
+thiserror = "2"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures = "0.3"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry"] }
+
+[workspace.lints.rust]
+# @todo I don't like it
+warnings = "deny"

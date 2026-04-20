@@ -1,0 +1,24 @@
+[package]
+name = "xoxo-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Optional ratatui overlay for xoxo. Bus client only."
+
+[dependencies]
+xoxo-core = { workspace = true }
+
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+uuid = { version = "1" }
+comrak = "0.52.0"
+
+ratatui = "0.30"
+crossterm = "0.29"
+ansi-to-tui = "8"
+
+[lints]
+workspace = true
