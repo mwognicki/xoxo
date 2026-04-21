@@ -259,6 +259,18 @@ fn collapse_blank_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
     collapsed
 }
 
+fn render_in_flight_thinking(content: &str) -> Vec<Line<'static>> {
+    let style = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::ITALIC);
+    let mut lines = Vec::new();
+    lines.push(prefixed_styled_line("thinking…", style));
+    for content_line in content.lines() {
+        lines.push(prefixed_styled_line(content_line.to_string(), style));
+    }
+    lines
+}
+
 fn render_markdown_message(content: &str) -> Vec<Line<'static>> {
     let arena = Arena::new();
     let options = Options::default();
@@ -621,8 +633,36 @@ pub fn draw(frame: &mut Frame, mode: LayoutMode, app: &App) {
                 previous_entry = Some(entry);
             }
 
-            if app.turn_in_progress {
+            let in_flight_thinking = app
+                .active_chat_id
+                .as_ref()
+                .and_then(|chat_id| app.in_flight_thinking.get(chat_id))
+                .filter(|buffer| !buffer.is_empty());
+            let in_flight = app
+                .active_chat_id
+                .as_ref()
+                .and_then(|chat_id| app.in_flight_text.get(chat_id))
+                .filter(|buffer| !buffer.is_empty());
+
+            if let Some(buffer) = in_flight_thinking {
                 if previous_entry.is_some() {
+                    conversation_lines.push(Line::from(""));
+                }
+                conversation_lines.extend(render_in_flight_thinking(buffer));
+            }
+
+            if let Some(buffer) = in_flight {
+                if previous_entry.is_some() || in_flight_thinking.is_some() {
+                    conversation_lines.push(Line::from(""));
+                }
+                conversation_lines.extend(render_markdown_message(buffer));
+            }
+
+            if app.turn_in_progress {
+                if previous_entry.is_some()
+                    || in_flight_thinking.is_some()
+                    || in_flight.is_some()
+                {
                     conversation_lines.push(Line::from(""));
                 }
                 conversation_lines.push(prefixed_styled_line(
@@ -778,6 +818,8 @@ mod tests {
             max_input_tokens: None,
             estimated_cost_usd: None,
             history,
+            in_flight_text: std::collections::HashMap::new(),
+            in_flight_thinking: std::collections::HashMap::new(),
             conversation_scroll_from_bottom: 0,
             modal_content: None,
             ctrl_c_count: 0,

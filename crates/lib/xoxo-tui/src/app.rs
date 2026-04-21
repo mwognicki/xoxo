@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 use uuid::Uuid;
 use xoxo_core::app_state::AppStateRepository;
@@ -15,7 +15,34 @@ use xoxo_core::model_catalog::lookup_model_summary;
 #[derive(Debug, Clone)]
 pub struct HistoryEntry {
     pub chat_id: Uuid,
-    pub payload: BusPayload,
+    pub payload: HistoryPayload,
+}
+
+/// TUI-local conversation entry payload.
+///
+/// Wraps [`BusPayload`] for canonical, bus-originated entries and adds a TUI-only
+/// [`HistoryPayload::Thinking`] variant for completed-but-not-persisted reasoning text.
+/// Thinking entries never round-trip through the bus or sled — they exist only for the
+/// lifetime of the TUI session so the user keeps seeing reasoning after the turn ends.
+#[derive(Debug, Clone)]
+pub enum HistoryPayload {
+    Bus(BusPayload),
+    Thinking(String),
+}
+
+impl From<BusPayload> for HistoryPayload {
+    fn from(payload: BusPayload) -> Self {
+        Self::Bus(payload)
+    }
+}
+
+impl HistoryPayload {
+    pub fn as_bus(&self) -> Option<&BusPayload> {
+        match self {
+            Self::Bus(payload) => Some(payload),
+            Self::Thinking(_) => None,
+        }
+    }
 }
 
 pub struct App {
@@ -47,6 +74,12 @@ pub struct App {
     pub estimated_cost_usd: Option<f32>,
     /// Conversation history as structured bus payloads for TUI-owned formatting.
     pub history: Vec<HistoryEntry>,
+    /// Transient, per-chat buffer of assistant text deltas streamed during the in-flight turn.
+    /// Cleared when the canonical [`BusPayload::Message`] for the chat arrives.
+    pub in_flight_text: HashMap<Uuid, String>,
+    /// Transient, per-chat buffer of assistant thinking/reasoning deltas streamed during the
+    /// in-flight turn. Cleared when the canonical [`BusPayload::Message`] arrives. Not persisted.
+    pub in_flight_thinking: HashMap<Uuid, String>,
     /// Manual scroll offset measured upward from the bottom of the conversation pane.
     pub conversation_scroll_from_bottom: usize,
     /// Current modal content (if any).
@@ -128,6 +161,8 @@ impl App {
             max_input_tokens,
             estimated_cost_usd,
             history,
+            in_flight_text: HashMap::new(),
+            in_flight_thinking: HashMap::new(),
             conversation_scroll_from_bottom: 0,
             modal_content: None,
             ctrl_c_count: 0,
@@ -270,6 +305,8 @@ Type your message and press Enter to send.".to_string()),
             BusPayload::Turn(TurnEvent::Started) => {
                 self.turn_in_progress = true;
                 self.last_turn_finish_reason = None;
+                self.in_flight_text.remove(&chat_id);
+                self.in_flight_thinking.remove(&chat_id);
                 return;
             }
             BusPayload::Turn(TurnEvent::Finished { reason }) => {
@@ -281,9 +318,32 @@ Type your message and press Enter to send.".to_string()),
                 if message.role == ChatTextRole::System {
                     return;
                 }
+                // Canonical assistant message supersedes any in-flight text buffer for this chat.
+                // Streamed thinking is preserved in TUI history (but never persisted to sled).
+                if message.role == ChatTextRole::Agent {
+                    self.in_flight_text.remove(&chat_id);
+                    if let Some(thinking) = self.in_flight_thinking.remove(&chat_id) {
+                        if !thinking.is_empty() {
+                            self.history.push(HistoryEntry {
+                                chat_id,
+                                payload: HistoryPayload::Thinking(thinking),
+                            });
+                        }
+                    }
+                }
             }
-            BusPayload::TextDelta { .. } | BusPayload::ThinkingDelta { .. } => {
-                // Ephemeral streaming fragments are display-only; live-buffer wiring lands in a later step.
+            BusPayload::TextDelta { delta } => {
+                self.in_flight_text
+                    .entry(chat_id)
+                    .or_default()
+                    .push_str(delta);
+                return;
+            }
+            BusPayload::ThinkingDelta { delta } => {
+                self.in_flight_thinking
+                    .entry(chat_id)
+                    .or_default()
+                    .push_str(delta);
                 return;
             }
             _ => {}
@@ -291,7 +351,7 @@ Type your message and press Enter to send.".to_string()),
 
         self.history.push(HistoryEntry {
             chat_id,
-            payload,
+            payload: HistoryPayload::Bus(payload),
         });
     }
 
@@ -317,6 +377,8 @@ Type your message and press Enter to send.".to_string()),
         self.active_chat_id = None;
         self.pending_submission = None;
         self.history.clear();
+        self.in_flight_text.clear();
+        self.in_flight_thinking.clear();
         self.conversation_scroll_from_bottom = 0;
         self.turn_in_progress = false;
         self.last_turn_finish_reason = None;
@@ -381,12 +443,12 @@ fn history_from_chat(chat: &Chat) -> Vec<HistoryEntry> {
             ChatEventBody::Message(message) if message.role != ChatTextRole::System => {
                 Some(HistoryEntry {
                     chat_id: chat.id,
-                    payload: BusPayload::Message(message.clone()),
+                    payload: HistoryPayload::Bus(BusPayload::Message(message.clone())),
                 })
             }
             ChatEventBody::ToolCall(tool_call) => Some(HistoryEntry {
                 chat_id: chat.id,
-                payload: BusPayload::ToolCall(tool_call.clone()),
+                payload: HistoryPayload::Bus(BusPayload::ToolCall(tool_call.clone())),
             }),
             ChatEventBody::Message(_) | ChatEventBody::AppEvent(_) => None,
         })
@@ -398,9 +460,10 @@ mod tests {
     use super::*;
 
     use crossterm::event::{KeyEvent, KeyModifiers};
+    use xoxo_core::bus::BusEnvelope;
     use xoxo_core::chat::structs::{
         ApiCompatibility, ApiProvider, BranchId, ChatAgent, ChatBranch, ChatEvent,
-        ChatLogEntry, ChatTextMessage, ChatToolCallId, MessageId, ModelConfig,
+        ChatLogEntry, ChatPath, ChatTextMessage, ChatToolCallId, MessageId, ModelConfig,
         ToolCallCompleted, ToolCallEvent,
     };
 
@@ -416,10 +479,10 @@ mod tests {
         app.active_chat_id = Some(chat_id);
         app.history.push(HistoryEntry {
             chat_id,
-            payload: BusPayload::Message(ChatTextMessage {
+            payload: HistoryPayload::Bus(BusPayload::Message(ChatTextMessage {
                 role: ChatTextRole::Agent,
                 content: "hello".to_string(),
-            }),
+            })),
         });
         app.turn_in_progress = true;
         app.last_turn_finish_reason = Some(LlmFinishReason::Stop);
@@ -441,10 +504,10 @@ mod tests {
         app.active_chat_id = Some(chat_id);
         app.history.push(HistoryEntry {
             chat_id,
-            payload: BusPayload::Message(ChatTextMessage {
+            payload: HistoryPayload::Bus(BusPayload::Message(ChatTextMessage {
                 role: ChatTextRole::User,
                 content: "hello".to_string(),
-            }),
+            })),
         });
         app.input = "/new".to_string();
 
@@ -532,5 +595,114 @@ mod tests {
 
         assert_eq!(history.len(), 1);
         assert!(matches!(history[0].payload, BusPayload::ToolCall(_)));
+    }
+
+    #[test]
+    fn text_deltas_accumulate_and_are_cleared_by_canonical_message() {
+        let mut app = App::new(None);
+        let chat_id = Uuid::new_v4();
+        let path = ChatPath(vec![chat_id]);
+
+        app.handle_bus_event(BusEnvelope {
+            path: path.clone(),
+            payload: BusPayload::TextDelta {
+                delta: "Hel".to_string(),
+            },
+        });
+        app.handle_bus_event(BusEnvelope {
+            path: path.clone(),
+            payload: BusPayload::TextDelta {
+                delta: "lo".to_string(),
+            },
+        });
+
+        assert_eq!(
+            app.in_flight_text.get(&chat_id).map(String::as_str),
+            Some("Hello")
+        );
+        // Deltas must not land in the persisted history.
+        assert!(app.history.is_empty());
+
+        app.handle_bus_event(BusEnvelope {
+            path,
+            payload: BusPayload::Message(ChatTextMessage {
+                role: ChatTextRole::Agent,
+                content: "Hello, world!".to_string(),
+            }),
+        });
+
+        assert!(app.in_flight_text.get(&chat_id).is_none());
+        assert_eq!(app.history.len(), 1);
+        assert!(matches!(app.history[0].payload, BusPayload::Message(_)));
+    }
+
+    #[test]
+    fn thinking_deltas_accumulate_and_are_cleared_by_canonical_message() {
+        let mut app = App::new(None);
+        let chat_id = Uuid::new_v4();
+        let path = ChatPath(vec![chat_id]);
+
+        app.handle_bus_event(BusEnvelope {
+            path: path.clone(),
+            payload: BusPayload::ThinkingDelta {
+                delta: "Let me ".to_string(),
+            },
+        });
+        app.handle_bus_event(BusEnvelope {
+            path: path.clone(),
+            payload: BusPayload::ThinkingDelta {
+                delta: "think.".to_string(),
+            },
+        });
+
+        assert_eq!(
+            app.in_flight_thinking.get(&chat_id).map(String::as_str),
+            Some("Let me think.")
+        );
+        // Thinking deltas must not land in persisted history.
+        assert!(app.history.is_empty());
+
+        app.handle_bus_event(BusEnvelope {
+            path,
+            payload: BusPayload::Message(ChatTextMessage {
+                role: ChatTextRole::Agent,
+                content: "Here's the answer.".to_string(),
+            }),
+        });
+
+        assert!(app.in_flight_thinking.get(&chat_id).is_none());
+    }
+
+    #[test]
+    fn turn_started_clears_prior_in_flight_thinking() {
+        let mut app = App::new(None);
+        let chat_id = Uuid::new_v4();
+        let path = ChatPath(vec![chat_id]);
+
+        app.in_flight_thinking.insert(chat_id, "stale".to_string());
+
+        app.handle_bus_event(BusEnvelope {
+            path,
+            payload: BusPayload::Turn(TurnEvent::Started),
+        });
+
+        assert!(app.in_flight_thinking.get(&chat_id).is_none());
+    }
+
+    #[test]
+    fn turn_started_clears_prior_in_flight_text() {
+        let mut app = App::new(None);
+        let chat_id = Uuid::new_v4();
+        let path = ChatPath(vec![chat_id]);
+
+        app.in_flight_text.insert(chat_id, "stale".to_string());
+
+        app.handle_bus_event(BusEnvelope {
+            path,
+            payload: BusPayload::Turn(TurnEvent::Started),
+        });
+
+        assert!(app.in_flight_text.get(&chat_id).is_none());
+        assert!(app.turn_in_progress);
     }
 }

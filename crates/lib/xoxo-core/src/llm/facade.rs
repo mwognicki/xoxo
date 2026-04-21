@@ -1,4 +1,4 @@
-use futures::stream::{self, Stream, StreamExt};
+use futures::stream::{self, StreamExt};
 use thiserror::Error;
 
 use crate::chat::structs::{
@@ -463,9 +463,11 @@ impl LlmFacade {
 
     /// Executes a completion and yields [`LlmStreamEvent`]s as the backend produces output.
     ///
-    /// Step 1 of streaming runs the underlying backend to completion and emits exactly one
-    /// [`LlmStreamEvent::Final`] carrying the assembled response. Delta events will be added
-    /// once the Rig and ai-lib adapters gain incremental decoding.
+    /// The rig backend path produces real [`LlmStreamEvent::TextDelta`] and
+    /// [`LlmStreamEvent::ThinkingDelta`] events as chunks arrive, followed by a single
+    /// [`LlmStreamEvent::Final`] carrying the assembled response. The ai-lib backend path
+    /// still runs to completion blocking and emits exactly one [`LlmStreamEvent::Final`];
+    /// wiring real streaming there is deferred.
     ///
     /// # Errors
     ///
@@ -479,136 +481,30 @@ impl LlmFacade {
         &self,
         provider_config: &ProviderConfig,
         request: LlmCompletionRequest,
-    ) -> impl Stream<Item = Result<LlmStreamEvent, LlmCompletionError>> + '_ {
-        let provider_config = provider_config.clone();
-        stream::once(async move {
-            let response = self.complete_inner(&provider_config, request).await?;
-            Ok(LlmStreamEvent::Final(Box::new(response)))
-        })
-    }
-
-    async fn complete_inner(
-        &self,
-        provider_config: &ProviderConfig,
-        request: LlmCompletionRequest,
-    ) -> Result<LlmCompletionResponse, LlmCompletionError> {
-        let resolved = self.resolve(provider_config, request.model.model_name.clone())?;
-
-        match resolved.backend {
-            RuntimeBackend::Rig(_) => self.complete_with_rig(&resolved, request).await,
-            RuntimeBackend::AiLib(_) => self.complete_with_ai_lib(&resolved, request).await,
-            RuntimeBackend::Custom { .. } => Err(LlmCompletionError::UnsupportedProvider(
-                resolved.model.provider.name,
-            )),
-        }
-    }
-
-    async fn complete_with_rig(
-        &self,
-        resolved: &ResolvedLlm,
-        request: LlmCompletionRequest,
-    ) -> Result<LlmCompletionResponse, LlmCompletionError> {
-        use rig::client::completion::CompletionClient;
-        use rig::completion::{AssistantContent, CompletionRequestBuilder, ToolDefinition as RigToolDefinition};
-
-        let prompt = request
-            .messages
-            .last()
-            .cloned()
-            .ok_or(LlmCompletionError::EmptyRequest)?;
-        let history = request
-            .messages
-            .iter()
-            .take(request.messages.len().saturating_sub(1))
-            .cloned()
-            .map(to_rig_message);
-        let tools = request
-            .tools
-            .iter()
-            .map(|tool| RigToolDefinition {
-                name: tool.name.clone(),
-                description: tool.description.clone().unwrap_or_default(),
-                parameters: tool.parameters.clone(),
-            })
-            .collect::<Vec<_>>();
-        let tool_choice = to_rig_tool_choice(&request.tool_choice);
-        let model_name = request.model.model_name.clone();
-
-        match resolved.provider_config.provider_id() {
-            Some("openrouter") => {
-                let mut client = rig::providers::openrouter::Client::builder()
-                    .api_key(resolved.provider_config.api_key.clone());
-                if let Some(base_url) = resolved.provider_config.effective_base_url() {
-                    client = client.base_url(base_url);
-                }
-                let client = client
-                    .build()
-                    .map_err(|error| LlmCompletionError::Execution(error.to_string()))?;
-                let model = client.completion_model(model_name);
-                let mut builder = CompletionRequestBuilder::new(model, to_rig_message(prompt))
-                    .messages(history)
-                    .max_tokens(2048);
-                if !tools.is_empty() {
-                    builder = builder.tools(tools);
-                }
-                if let Some(choice) = tool_choice {
-                    builder = builder.tool_choice(choice);
-                }
-                let response = builder
-                    .send()
-                    .await
-                    .map_err(|error| LlmCompletionError::Execution(error.to_string()))?;
-
-                let message = ChatTextMessage {
-                    role: crate::chat::structs::ChatTextRole::Agent,
-                    content: response
-                        .choice
-                        .iter()
-                        .filter_map(|content| match content {
-                            AssistantContent::Text(text) => Some(text.text.clone()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                };
-                let tool_calls: Vec<crate::llm::LlmToolCall> = response
-                    .choice
-                    .iter()
-                    .filter_map(|content| match content {
-                        AssistantContent::ToolCall(tool_call) => Some(crate::llm::LlmToolCall {
-                            name: tool_call.function.name.clone(),
-                            arguments: Some(tool_call.function.arguments.clone()),
-                        }),
-                        _ => None,
-                    })
-                    .collect();
-                let finish_reason = if tool_calls.is_empty() {
-                    LlmFinishReason::Stop
-                } else {
-                    LlmFinishReason::ToolCalls
-                };
-
-                Ok(LlmCompletionResponse {
-                    message,
-                    tool_calls,
-                    finish_reason,
-                    observability: Some(CostObservability {
-                        model_name: Some(request.model.model_name),
-                        provider_name: Some(request.model.provider.name),
-                        usage: crate::chat::structs::TokenUsage {
-                            input_tokens: response.usage.input_tokens,
-                            output_tokens: response.usage.output_tokens,
-                            cached_input_tokens: response.usage.cached_input_tokens,
-                            reasoning_tokens: 0,
-                            total_tokens: response.usage.total_tokens,
-                        },
-                        cost: Default::default(),
-                    }),
-                })
+    ) -> futures::stream::BoxStream<'_, Result<LlmStreamEvent, LlmCompletionError>> {
+        let resolved = match self.resolve(provider_config, request.model.model_name.clone()) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                return stream::once(async move { Err(LlmCompletionError::from(error)) }).boxed();
             }
-            other => Err(LlmCompletionError::UnsupportedProvider(
-                other.unwrap_or("custom").to_string(),
-            )),
+        };
+
+        match &resolved.backend {
+            RuntimeBackend::Rig(_) => {
+                crate::llm::rig_stream::openrouter_stream(provider_config.clone(), request)
+            }
+            RuntimeBackend::AiLib(_) => stream::once(async move {
+                let response = self.complete_with_ai_lib(&resolved, request).await?;
+                Ok(LlmStreamEvent::Final(Box::new(response)))
+            })
+            .boxed(),
+            RuntimeBackend::Custom { .. } => {
+                let provider_name = resolved.model.provider.name.clone();
+                stream::once(async move {
+                    Err(LlmCompletionError::UnsupportedProvider(provider_name))
+                })
+                .boxed()
+            }
         }
     }
 
@@ -743,7 +639,7 @@ fn api_compatibility_from_custom(
     }
 }
 
-fn to_rig_message(message: ChatTextMessage) -> rig::completion::Message {
+pub(crate) fn to_rig_message(message: ChatTextMessage) -> rig::completion::Message {
     match message.role {
         crate::chat::structs::ChatTextRole::System => rig::completion::Message::system(message.content),
         crate::chat::structs::ChatTextRole::User => rig::completion::Message::user(message.content),
@@ -751,7 +647,7 @@ fn to_rig_message(message: ChatTextMessage) -> rig::completion::Message {
     }
 }
 
-fn to_rig_tool_choice(choice: &Option<LlmToolChoice>) -> Option<rig::message::ToolChoice> {
+pub(crate) fn to_rig_tool_choice(choice: &Option<LlmToolChoice>) -> Option<rig::message::ToolChoice> {
     choice.as_ref().map(|choice| match choice {
         LlmToolChoice::Auto => rig::message::ToolChoice::Auto,
         LlmToolChoice::None => rig::message::ToolChoice::None,

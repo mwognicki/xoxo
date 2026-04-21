@@ -57,13 +57,19 @@ impl ReadFileTool {
     /// Execute the read-file tool with contract-shaped arguments.
     pub async fn execute(
         &self,
+        ctx: &ToolContext,
         file_path: &str,
         line_range: Option<&str>,
         with_noise: bool,
     ) -> Result<Value, ToolError> {
         let (content, total_lines) = self
-            .read_file_impl(file_path, line_range, with_noise, None)
+            .read_file_impl(file_path, line_range, with_noise)
             .map_err(map_read_file_error)?;
+
+        if let Some(exec_ctx) = &ctx.execution_context {
+            let checksum = read_file_md5(file_path).map_err(map_read_file_error)?;
+            exec_ctx.file_registry.lock().await.upsert(file_path, checksum);
+        }
 
         Ok(json!({
             "content": content,
@@ -76,9 +82,8 @@ impl ReadFileTool {
         file_path: &str,
         line_range: Option<&str>,
         with_noise: bool,
-        checksum_callback: Option<fn(&str, &str)>,
     ) -> ReadFileResult {
-        read_file_impl(file_path, line_range, with_noise, checksum_callback)
+        read_file_impl(file_path, line_range, with_noise)
     }
 }
 
@@ -130,14 +135,20 @@ impl Tool for ReadFileTool {
 
     async fn execute(
         &self,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
         input: Value,
     ) -> Result<Value, ToolError> {
         let input: ReadFileInput = serde_json::from_value(input)
             .map_err(|err| ToolError::InvalidInput(err.to_string()))?;
 
-        ReadFileTool::execute(self, &input.file_path, input.line_range.as_deref(), input.with_noise)
-            .await
+        ReadFileTool::execute(
+            self,
+            ctx,
+            &input.file_path,
+            input.line_range.as_deref(),
+            input.with_noise,
+        )
+        .await
     }
 }
 
@@ -157,7 +168,6 @@ fn map_read_file_error(error: ReadFileError) -> ToolError {
 /// * `file_path` - Path to the file (absolute or relative to PWD)
 /// * `line_range` - Optional line range in format "start:end" (1-indexed, inclusive)
 /// * `with_noise` - If truthy, strips the file of comments before returning
-/// * `checksum_callback` - Optional callback to receive file path and MD5 checksum
 ///
 /// # Returns
 ///
@@ -175,7 +185,6 @@ fn read_file_impl(
     file_path: &str,
     line_range: Option<&str>,
     with_noise: bool,
-    checksum_callback: Option<fn(&str, &str)>, // (file_path, checksum)
 ) -> ReadFileResult {
     // Check if file exists
     if !Path::new(file_path).exists() {
@@ -189,14 +198,6 @@ fn read_file_impl(
     };
 
     let total_lines = content.lines().count();
-
-    // Calculate MD5 checksum of full file contents
-    let checksum = format!("{:x}", md5::compute(&content));
-    
-    // Call callback if provided, otherwise print checksum
-    if let Some(callback) = checksum_callback {
-        callback(file_path, &checksum);
-    }
 
     // Apply noise stripping to full content if with_noise is false
     let processed_content = if !with_noise {
@@ -261,6 +262,11 @@ fn read_file_impl(
     Ok((processed_content, total_lines))
 }
 
+fn read_file_md5(file_path: &str) -> Result<String, ReadFileError> {
+    let content = fs::read_to_string(file_path).map_err(|e| ReadFileError::IoError(e.to_string()))?;
+    Ok(format!("{:x}", md5::compute(content)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,7 +281,7 @@ mod tests {
         writeln!(file, "Line 1\nLine 2\nLine 3").unwrap();
         let path = file.path().to_str().unwrap();
 
-        let result = ReadFileTool.read_file_impl(path, None, false, None);
+        let result = ReadFileTool.read_file_impl(path, None, false);
         assert!(result.is_ok());
         let (content, total) = result.unwrap();
         assert_eq!(total, 3);
@@ -289,7 +295,7 @@ mod tests {
         writeln!(file, "Line 1\nLine 2\nLine 3\nLine 4").unwrap();
         let path = file.path().to_str().unwrap();
 
-        let result = ReadFileTool.read_file_impl(path, Some("2:3"), false, None);
+        let result = ReadFileTool.read_file_impl(path, Some("2:3"), false);
         assert!(result.is_ok());
         let (content, total) = result.unwrap();
         assert_eq!(total, 4);
@@ -306,7 +312,7 @@ mod tests {
         let path = file.path().to_str().unwrap();
 
         // Request range that partially exists
-        let result = ReadFileTool.read_file_impl(path, Some("1:5"), false, None);
+        let result = ReadFileTool.read_file_impl(path, Some("1:5"), false);
         assert!(result.is_ok());
         let (content, total) = result.unwrap();
         assert_eq!(total, 2);
@@ -320,13 +326,13 @@ mod tests {
         writeln!(file, "Line 1\nLine 2").unwrap();
         let path = file.path().to_str().unwrap();
 
-        let result = ReadFileTool.read_file_impl(path, Some("5:10"), false, None);
+        let result = ReadFileTool.read_file_impl(path, Some("5:10"), false);
         assert!(matches!(result, Err(ReadFileError::InvalidLineRange { .. })));
     }
 
     #[test]
     fn test_file_not_found() {
-        let result = ReadFileTool.read_file_impl("nonexistent.txt", None, false, None);
+        let result = ReadFileTool.read_file_impl("nonexistent.txt", None, false);
         assert!(matches!(result, Err(ReadFileError::FileNotFound(_))));
     }
 

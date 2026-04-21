@@ -46,10 +46,23 @@ impl WriteFileTool {
     }
 
     /// Execute the write-file tool with contract-shaped arguments.
-    pub async fn execute(&self, file_path: &str, content: &str) -> Result<Value, ToolError> {
+    pub async fn execute(
+        &self,
+        ctx: &ToolContext,
+        file_path: &str,
+        content: &str,
+    ) -> Result<Value, ToolError> {
         let checksum = self
             .write_file_impl(file_path, content, None)
             .map_err(map_write_file_error)?;
+
+        if let Some(exec_ctx) = &ctx.execution_context {
+            exec_ctx
+                .file_registry
+                .lock()
+                .await
+                .upsert(file_path, checksum.clone());
+        }
 
         Ok(json!({
             "message": format!("File saved: {file_path}"),
@@ -108,13 +121,13 @@ impl Tool for WriteFileTool {
 
     async fn execute(
         &self,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
         input: Value,
     ) -> Result<Value, ToolError> {
         let input: WriteFileInput = serde_json::from_value(input)
             .map_err(|err| ToolError::InvalidInput(err.to_string()))?;
 
-        WriteFileTool::execute(self, &input.file_path, &input.content).await
+        WriteFileTool::execute(self, ctx, &input.file_path, &input.content).await
     }
 }
 

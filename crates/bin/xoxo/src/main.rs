@@ -15,6 +15,7 @@ use xoxo_core::syntax_highlighter::highlight_syntax;
 use nerd::tools::read_file::ReadFileTool;
 use xoxo_core::config::load_config;
 use xoxo_core::storage::bootstrap_storage;
+use xoxo_core::tooling::ToolContext;
 
 #[derive(Parser)]
 #[command(name = "xoxo", version, about)]
@@ -153,8 +154,13 @@ async fn handle_read_file(
     line_range: Option<String>,
     with_noise: bool,
 ) -> Result<()> {
+    let tool_context = ToolContext {
+        execution_context: None,
+        spawner: None,
+    };
+
     let output = match ReadFileTool
-        .execute(&file_path, line_range.as_deref(), with_noise)
+        .execute(&tool_context, &file_path, line_range.as_deref(), with_noise)
         .await
     {
         Ok(output) => output,

@@ -37,15 +37,44 @@ impl PatchFileTool {
 
     pub async fn execute(
         &self,
+        ctx: &ToolContext,
         file_path: &str,
         updates: Vec<PatchFile>,
     ) -> Result<Value, ToolError> {
+        let original_md5 = if ctx.execution_context.is_some() {
+            Some(read_file_md5(file_path).map_err(ToolError::ExecutionFailed)?)
+        } else {
+            None
+        };
+
+        if let (Some(exec_ctx), Some(original_md5)) = (&ctx.execution_context, original_md5.as_deref()) {
+            exec_ctx
+                .file_registry
+                .lock()
+                .await
+                .ensure_read(file_path, original_md5)
+                .map_err(|err| ToolError::ExecutionFailed(err.to_string()))?;
+        }
+
         let updated = self
             .patch_file_impl(file_path, updates, None, None)
             .map_err(ToolError::ExecutionFailed)?;
+        let updated_md5 = format!("{:x}", md5::compute(&updated));
+
+        if let (Some(exec_ctx), Some(original_md5)) = (&ctx.execution_context, original_md5.as_deref()) {
+            exec_ctx
+                .file_registry
+                .lock()
+                .await
+                .update(file_path, original_md5, updated_md5.clone())
+                .map_err(|err| ToolError::ExecutionFailed(err.to_string()))?;
+        }
 
         Ok(json!({
+            "message": format!("File patched: {file_path}"),
             "file_path": file_path,
+            "exists": true,
+            "md5": updated_md5,
             "line_count": split_lines(&updated).len(),
         }))
     }
@@ -122,15 +151,28 @@ impl Tool for PatchFileTool {
         }
     }
 
+    fn map_to_preview(&self, output: &Value) -> String {
+        let file_path = output["file_path"].as_str();
+        let checksum = output["md5"].as_str();
+
+        match (file_path, checksum) {
+            (Some(file_path), Some(checksum)) => {
+                format!("File patched: {file_path} (MD5: {checksum})")
+            }
+            (Some(file_path), None) => format!("File patched: {file_path}"),
+            _ => "File patched".to_string(),
+        }
+    }
+
     async fn execute(
         &self,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
         input: Value,
     ) -> Result<Value, ToolError> {
         let input: PatchFileInput = serde_json::from_value(input)
             .map_err(|err| ToolError::InvalidInput(err.to_string()))?;
 
-        PatchFileTool::execute(self, &input.file_path, input.updates).await
+        PatchFileTool::execute(self, ctx, &input.file_path, input.updates).await
     }
 }
 
@@ -288,6 +330,11 @@ fn patch_file_impl(
     }
 
     Ok(updated)
+}
+
+fn read_file_md5(file_path: &str) -> Result<String, String> {
+    let content = fs::read_to_string(file_path).map_err(|err| err.to_string())?;
+    Ok(format!("{:x}", md5::compute(content)))
 }
 
 fn split_lines(content: &str) -> Vec<String> {
@@ -541,6 +588,13 @@ mod tests {
         ))
         .unwrap();
 
+        assert_eq!(output["message"], "File patched: ".to_string() + file.path().to_str().unwrap());
+        assert_eq!(output["file_path"], file.path().to_str().unwrap());
+        assert_eq!(output["exists"], true);
+        assert_eq!(
+            output["md5"],
+            format!("{:x}", md5::compute("one\nTWO\nthree\n"))
+        );
         assert_eq!(output["line_count"], 3);
         assert_eq!(fs::read_to_string(file.path()).unwrap(), "one\nTWO\nthree\n");
     }

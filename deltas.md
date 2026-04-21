@@ -25,7 +25,13 @@ Goal: prove the contract with one adapter.
 - In complete_with_rig, swap builder.send().await for builder.stream().await.
 - While consuming the stream: forward text chunks as TextDelta, forward rig's reasoning chunks (if the model emits them) as ThinkingDelta, accumulate into local buffers.
 - At stream end, assemble and yield Final with the same LlmCompletionResponse shape produced today (message, tool calls, finish reason, observability).
-- ai-lib path stays blocking for now — it just emits Final.
+- ai-lib path stays blocking for now — it just emits Final. Wiring real
+  streaming into ai-lib is explicitly deferred to a later step (not covered
+  by this plan) and only worth doing if streaming-capable models are
+  actually routed through it. The `complete_streaming` contract
+  ("zero or more deltas, then exactly one Final") is fully satisfied by a
+  backend that emits zero deltas, so ai-lib remains compliant without
+  regression.
 
 Ship criteria: rig/openrouter chats still behave end-to-end; deltas are produced but nobody reads them yet.
                                                                                                                                                                                          

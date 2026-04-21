@@ -7,8 +7,11 @@ use crate::chat::structs::{
     ToolCallKind, ToolCallStarted,
 };
 use crate::config::ProviderConfig;
-use crate::llm::{LlmCompletionRequest, LlmCompletionResponse, LlmFacade, LlmToolCall};
+use crate::llm::{
+    LlmCompletionRequest, LlmCompletionResponse, LlmFacade, LlmStreamEvent, LlmToolCall,
+};
 use crate::llm::LlmFinishReason;
+use futures::StreamExt;
 use crate::storage::{Storage, StorageError, bootstrap_storage};
 use crate::tooling::{
     BashOptions, ToolContext, ToolError, ToolExecutionContext, ToolRegistry, ToolSet,
@@ -644,12 +647,52 @@ impl AgentRunner {
         };
 
         if let Some(provider_config) = &self.provider_config {
-            return match LlmFacade::new().complete(provider_config, request.clone()).await {
-                Ok(response) => response,
-                Err(error) => LlmCompletionResponse {
+            let facade = LlmFacade::new();
+            let mut stream =
+                Box::pin(facade.complete_streaming(provider_config, request.clone()));
+            let mut final_response: Option<LlmCompletionResponse> = None;
+            let mut stream_error: Option<String> = None;
+
+            while let Some(event) = stream.next().await {
+                match event {
+                    Ok(LlmStreamEvent::TextDelta(delta)) => {
+                        let _ = self.events.send(BusEnvelope {
+                            path: self.path.clone(),
+                            payload: BusPayload::TextDelta { delta },
+                        });
+                    }
+                    Ok(LlmStreamEvent::ThinkingDelta(delta)) => {
+                        let _ = self.events.send(BusEnvelope {
+                            path: self.path.clone(),
+                            payload: BusPayload::ThinkingDelta { delta },
+                        });
+                    }
+                    Ok(LlmStreamEvent::Final(response)) => {
+                        final_response = Some(*response);
+                    }
+                    Err(error) => {
+                        stream_error = Some(error.to_string());
+                        break;
+                    }
+                }
+            }
+
+            return match (final_response, stream_error) {
+                (Some(response), None) => response,
+                (_, Some(message)) => LlmCompletionResponse {
                     message: ChatTextMessage {
                         role: ChatTextRole::Agent,
-                        content: error.to_string(),
+                        content: message,
+                    },
+                    tool_calls: Vec::new(),
+                    finish_reason: LlmFinishReason::Stop,
+                    observability: None,
+                },
+                (None, None) => LlmCompletionResponse {
+                    message: ChatTextMessage {
+                        role: ChatTextRole::Agent,
+                        content: "completion stream ended without emitting a final response"
+                            .to_string(),
                     },
                     tool_calls: Vec::new(),
                     finish_reason: LlmFinishReason::Stop,
