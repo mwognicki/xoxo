@@ -282,6 +282,10 @@ Type your message and press Enter to send.".to_string()),
                     return;
                 }
             }
+            BusPayload::TextDelta { .. } | BusPayload::ThinkingDelta { .. } => {
+                // Ephemeral streaming fragments are display-only; live-buffer wiring lands in a later step.
+                return;
+            }
             _ => {}
         }
 

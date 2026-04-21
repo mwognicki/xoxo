@@ -28,6 +28,11 @@ pub struct BusEnvelope<T> {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BusPayload {
     Message(ChatTextMessage),
+    /// Ephemeral streaming fragment of assistant text. Not persisted; display only.
+    /// Superseded by the canonical [`BusPayload::Message`] for the turn.
+    TextDelta { delta: String },
+    /// Ephemeral streaming fragment of assistant thinking/reasoning. Not persisted; display only.
+    ThinkingDelta { delta: String },
     ToolCall(ToolCallEvent),
     Turn(TurnEvent),
     AgentShutdown,

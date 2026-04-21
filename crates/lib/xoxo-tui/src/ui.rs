@@ -233,6 +233,7 @@ fn render_plain_payload(app: &App, entry: &HistoryEntry) -> Vec<Line<'static>> {
                 tool_format::format_failed(app, failed)
             }
         }
+        BusPayload::TextDelta { .. } | BusPayload::ThinkingDelta { .. } => Vec::new(),
         BusPayload::Turn(_) => Vec::new(),
         BusPayload::AgentShutdown => vec![prefixed_plain_line("shutdown")],
         BusPayload::Error(error) => vec![prefixed_plain_line(format!("error: {}", error.message))],
