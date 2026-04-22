@@ -254,6 +254,8 @@ async fn run_tui(storage: Arc<xoxo_core::storage::Storage>) -> Result<()> {
             }
         }
 
+        tui.set_mouse_capture(app.mouse_capture_enabled)?;
+
         // Pass the current layout mode to the draw function.
         let mode = app.layout;
         tui.terminal().draw(|f| draw(f, mode, &app))?;

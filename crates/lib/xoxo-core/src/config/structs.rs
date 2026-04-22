@@ -270,6 +270,13 @@ pub struct CurrentModelConfig {
     pub model_name: String,
 }
 
+#[derive(TomlExample, Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct UiConfig {
+    #[toml_example(default = "EUR")]
+    pub currency: Option<String>,
+}
+
+
 /// Top-level xoxo configuration file.
 #[derive(TomlExample, Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -285,6 +292,8 @@ pub struct Config {
     /// Optional configured LLM providers.
     #[toml_example(nesting)]
     pub providers: Option<Vec<ProviderConfig>>,
+    #[toml_example(nesting)]
+    pub ui: Option<UiConfig>,
 }
 
 impl Config {
@@ -327,7 +336,9 @@ impl Config {
     /// # Examples
     ///
     /// ```rust
-    /// use xoxo_core::config::{CodeQualityConfig, Config};
+    /// use xoxo_core::config::{
+    ///     CodeQualityConfig, Config, CurrentModelConfig, CurrentProviderConfig,
+    /// };
     ///
     /// let config = Config {
     ///     code_quality: CodeQualityConfig {
@@ -341,6 +352,7 @@ impl Config {
     ///         model_name: "minimax-m2.5:free".to_string(),
     ///     },
     ///     providers: None,
+    ///     ui: None,
     /// };
     ///
     /// assert!(config.providers().is_empty());
@@ -378,6 +390,7 @@ impl Config {
     ///         model_name: "minimax-m2.5:free".to_string(),
     ///     },
     ///     providers: Some(vec![ProviderConfig::built_in("openai", None, "secret")]),
+    ///     ui: None,
     /// };
     ///
     /// assert_eq!(
@@ -440,6 +453,7 @@ mod tests {
                 model_name: "minimax-m2.5:free".to_string(),
             },
             providers: None,
+            ui: None,
         };
 
         assert_eq!(config.current_provider().name, "openrouter");

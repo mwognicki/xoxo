@@ -158,7 +158,9 @@ impl ProviderRegistry {
     /// # Examples
     ///
     /// ```rust
-    /// use xoxo_core::config::{CodeQualityConfig, Config};
+    /// use xoxo_core::config::{
+    ///     CodeQualityConfig, Config, CurrentModelConfig, CurrentProviderConfig,
+    /// };
     /// use xoxo_core::llm::ProviderRegistry;
     ///
     /// let registry = ProviderRegistry::new();
@@ -166,7 +168,15 @@ impl ProviderRegistry {
     ///     code_quality: CodeQualityConfig {
     ///         max_lines_in_file: 400,
     ///     },
+    ///     current_provider: CurrentProviderConfig {
+    ///         name: "openrouter".to_string(),
+    ///         compatibility: "open_router".to_string(),
+    ///     },
+    ///     current_model: CurrentModelConfig {
+    ///         model_name: "minimax-m2.5:free".to_string(),
+    ///     },
     ///     providers: None,
+    ///     ui: None,
     /// };
     ///
     /// let _ = registry.resolve_all(&config).unwrap();
