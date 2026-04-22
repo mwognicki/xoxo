@@ -16,13 +16,11 @@ Available Commands:
   /new     - Start a fresh chat
 
 Navigation:
-  MouseWheel - Scroll conversation
   Tab      - Toggle layout mode
   Up/Down  - Scroll conversation
   PgUp/PgDn- Scroll faster
   Home/End - Jump to top/bottom
   Ctrl+C   - Exit (press twice)
-  q        - Exit immediately
 
 Type your message and press Enter to send."
                     .to_string(),
@@ -33,6 +31,10 @@ Type your message and press Enter to send."
 
     pub fn handle_event(&mut self, event: Event) -> Result<()> {
         match event {
+            Event::Paste(content) => {
+                self.input.push_str(&content);
+                self.check_command_activation();
+            }
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     return Ok(());
@@ -51,7 +53,6 @@ Type your message and press Enter to send."
                 }
 
                 match key.code {
-                    KeyCode::Char('q') => self.running = false,
                     KeyCode::Tab => {
                         self.layout = match self.layout {
                             LayoutMode::Main => LayoutMode::Alternate,
@@ -82,6 +83,7 @@ Type your message and press Enter to send."
                     KeyCode::Enter => {
                         let line: String = self.input.drain(..).collect();
                         match line.as_str() {
+                            "/quit" => self.running = false,
                             "/clear" | "/new" => self.reset_for_new_chat(),
                             _ if !line.is_empty() && !line.starts_with('/') => {
                                 self.pending_submission = Some(line);
@@ -135,6 +137,14 @@ mod tests {
             .expect("enter event");
     }
 
+    fn press_char(app: &mut App, character: char) {
+        app.handle_event(Event::Key(KeyEvent::new(
+            KeyCode::Char(character),
+            KeyModifiers::NONE,
+        )))
+        .expect("char event");
+    }
+
     #[test]
     fn clear_command_resets_current_session() {
         let mut app = App::new(None);
@@ -185,5 +195,49 @@ mod tests {
         assert_eq!(app.context_left_percent, None);
         assert_eq!(app.max_input_tokens, None);
         assert_eq!(app.estimated_cost_usd, None);
+    }
+
+    #[test]
+    fn multiline_paste_buffers_input_without_submitting() {
+        let mut app = App::new(None);
+
+        app.handle_event(Event::Paste("first\nsecond\nthird".to_string()))
+            .expect("paste event");
+
+        assert_eq!(app.input, "first\nsecond\nthird");
+        assert_eq!(app.pending_submission, None);
+    }
+
+    #[test]
+    fn enter_submits_multiline_pasted_input_once() {
+        let mut app = App::new(None);
+        app.input = "first\nsecond".to_string();
+
+        press_enter(&mut app);
+
+        assert_eq!(app.input, "");
+        assert_eq!(app.pending_submission, Some("first\nsecond".to_string()));
+    }
+
+    #[test]
+    fn q_is_regular_input_text() {
+        let mut app = App::new(None);
+
+        for character in "quick question".chars() {
+            press_char(&mut app, character);
+        }
+
+        assert!(app.running);
+        assert_eq!(app.input, "quick question");
+    }
+
+    #[test]
+    fn quit_command_exits_application() {
+        let mut app = App::new(None);
+        app.input = "/quit".to_string();
+
+        press_enter(&mut app);
+
+        assert!(!app.running);
     }
 }

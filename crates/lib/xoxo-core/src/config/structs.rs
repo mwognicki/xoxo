@@ -270,6 +270,13 @@ pub struct CurrentModelConfig {
     pub model_name: String,
 }
 
+#[derive(TomlExample, Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct UiConfig {
+    #[toml_example(default = "EUR")]
+    pub currency: Option<String>,
+}
+
+
 /// Top-level xoxo configuration file.
 #[derive(TomlExample, Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -285,6 +292,8 @@ pub struct Config {
     /// Optional configured LLM providers.
     #[toml_example(nesting)]
     pub providers: Option<Vec<ProviderConfig>>,
+    #[toml_example(nesting)]
+    pub ui: Option<UiConfig>,
 }
 
 impl Config {

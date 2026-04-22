@@ -2,6 +2,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use xoxo_core::bus::{BusPayload, TurnEvent};
 use xoxo_core::chat::structs::{ChatTextRole, ChatToolCallId, ToolCallEvent, ToolCallStarted};
+use xoxo_core::syntax_highlighter::highlight_syntax;
 
 use crate::app::{App, HistoryEntry};
 use crate::tool_format;
@@ -33,7 +34,7 @@ pub(super) fn build_conversation_lines(
 
         if is_markdown_assistant_message(entry) {
             if let BusPayload::Message(message) = &entry.payload {
-                lines.extend(render_markdown_message(&message.content));
+                lines.extend(render_markdown_message(&message.content, highlight_syntax));
             }
         } else {
             lines.extend(render_plain_payload(app, entry));
@@ -75,7 +76,7 @@ fn doing_indicator_style(app: &App) -> Style {
     let color = match phase {
         0 | 5 => Color::Indexed(166),
         1 | 4 => Color::Indexed(172),
-        2 | 3 => Color::Indexed(202),
+        2 | 3 => Color::Indexed(167),
         _ => Color::Indexed(208),
     };
     let mut style = Style::default().fg(color);
@@ -121,7 +122,7 @@ fn render_plain_payload(app: &App, entry: &HistoryEntry) -> Vec<Line<'static>> {
             .content
             .lines()
             .map(|content_line| {
-                let border_span = Span::styled("│", Style::default().fg(Color::Indexed(202)));
+                let border_span = Span::styled("┋", Style::default().fg(Color::Indexed(167)));
                 let content_span = Span::styled(
                     content_line.to_string(),
                     Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
@@ -182,7 +183,8 @@ mod tests {
     use uuid::Uuid;
     use xoxo_core::bus::BusPayload;
     use xoxo_core::chat::structs::{
-        ChatToolCallId, ToolCallCompleted, ToolCallEvent, ToolCallStarted,
+        ChatTextMessage, ChatTextRole, ChatToolCallId, ToolCallCompleted, ToolCallEvent,
+        ToolCallStarted,
     };
 
     use crate::app::LayoutMode;
@@ -281,5 +283,30 @@ mod tests {
         };
 
         assert!(render_plain_payload(&app, &completed_entry).is_empty());
+    }
+
+    #[test]
+    fn assistant_code_blocks_use_core_syntax_highlighting() {
+        let app = test_app_with_history(vec![HistoryEntry {
+            chat_id: Uuid::new_v4(),
+            payload: BusPayload::Message(ChatTextMessage {
+                role: ChatTextRole::Agent,
+                content: "```rs\nfn main() {}\n```".to_string(),
+            }),
+        }]);
+
+        let conversation = build_conversation_lines(&app, Vec::new());
+        let function_line = conversation
+            .lines
+            .iter()
+            .find(|line| line.spans.iter().any(|span| span.content.contains("fn")))
+            .expect("highlighted function line");
+
+        assert!(
+            function_line
+                .spans
+                .iter()
+                .any(|span| span.content.contains("fn") && span.style.fg.is_some())
+        );
     }
 }

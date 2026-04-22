@@ -1,27 +1,40 @@
-use comrak::nodes::{ListType, NodeCode, NodeHeading, NodeLink, NodeMath, NodeValue};
+use ansi_to_tui::IntoText as _;
+use comrak::nodes::{
+    ListType, NodeCode, NodeCodeBlock, NodeHeading, NodeLink, NodeMath, NodeValue,
+};
 use comrak::{parse_document, Arena, Options};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 
 use crate::ui::{
     prefixed_plain_line, prefixed_styled_line, ASSISTANT_PADDING,
 };
 
-pub(super) fn render_markdown_message(content: &str) -> Vec<Line<'static>> {
+pub(super) fn render_markdown_message(
+    content: &str,
+    syntax_highlighter: fn(&str, &str) -> String,
+) -> Vec<Line<'static>> {
     let arena = Arena::new();
     let options = Options::default();
     let root = parse_document(&arena, content, &options);
-    let mut renderer = MarkdownRenderer::default();
+    let mut renderer = MarkdownRenderer::new(syntax_highlighter);
     renderer.render_document(root);
     renderer.finish()
 }
 
-#[derive(Default)]
 struct MarkdownRenderer {
     lines: Vec<Line<'static>>,
+    syntax_highlighter: fn(&str, &str) -> String,
 }
 
 impl MarkdownRenderer {
+    fn new(syntax_highlighter: fn(&str, &str) -> String) -> Self {
+        Self {
+            lines: Vec::new(),
+            syntax_highlighter,
+        }
+    }
+
     fn render_document<'a>(&mut self, root: comrak::Node<'a>) {
         let children: Vec<_> = root.children().collect();
         for (index, child) in children.iter().enumerate() {
@@ -56,20 +69,11 @@ impl MarkdownRenderer {
                 ));
             }
             NodeValue::CodeBlock(code_block) => {
-                let style = Style::default()
-                    .fg(Color::Indexed(179))
-                    .bg(Color::Indexed(235));
-                let mut emitted = false;
-                for line in code_block.literal.lines() {
-                    self.lines.push(prefixed_styled_line(
-                        format!("{first_prefix}{line}").trim_start_matches(ASSISTANT_PADDING),
-                        style,
-                    ));
-                    emitted = true;
-                }
-                if !emitted {
-                    self.lines.push(prefixed_styled_line("", style));
-                }
+                self.lines.extend(render_code_block(
+                    code_block,
+                    first_prefix,
+                    self.syntax_highlighter,
+                ));
             }
             NodeValue::BlockQuote => {
                 let quoted_first = format!("{first_prefix}> ");
@@ -154,6 +158,58 @@ impl MarkdownRenderer {
             self.lines
         }
     }
+}
+
+fn render_code_block(
+    code_block: Box<NodeCodeBlock>,
+    prefix: &str,
+    syntax_highlighter: fn(&str, &str) -> String,
+) -> Vec<Line<'static>> {
+    let style = Style::default()
+        .fg(Color::Indexed(179))
+        .bg(Color::Indexed(235));
+    let extension = code_block_extension(&code_block.info);
+    let highlighted = syntax_highlighter(extension, &code_block.literal);
+    let highlighted_text = highlighted
+        .into_text()
+        .unwrap_or_else(|_| Text::raw(code_block.literal.clone()));
+    let mut lines = Vec::new();
+
+    for line in highlighted_text.lines {
+        lines.push(prefixed_code_line(prefix, line, style));
+    }
+
+    if lines.is_empty() {
+        lines.push(prefixed_styled_line(
+            prefix.trim_start_matches(ASSISTANT_PADDING),
+            style,
+        ));
+    }
+
+    lines
+}
+
+fn prefixed_code_line(
+    prefix: &str,
+    mut line: Line<'static>,
+    fallback_style: Style,
+) -> Line<'static> {
+    let mut spans = vec![Span::styled(prefix.to_string(), fallback_style)];
+    if line.spans.is_empty() {
+        spans.push(Span::styled(String::new(), fallback_style));
+    } else {
+        for span in line.spans.drain(..) {
+            let content = span.content.to_string();
+            let style = fallback_style.patch(span.style);
+            spans.push(Span::styled(content, style));
+        }
+    }
+    Line::from(spans)
+}
+
+fn code_block_extension(info: &str) -> &str {
+    let language = info.split_whitespace().next().unwrap_or_default();
+    language.strip_prefix('.').unwrap_or(language)
 }
 
 fn render_inline_block<'a>(
