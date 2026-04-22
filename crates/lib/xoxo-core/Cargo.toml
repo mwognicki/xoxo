@@ -21,7 +21,6 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-syntect = "5.3"
 futures = { workspace = true }
 
 ai-lib = "0.4"
@@ -31,7 +30,6 @@ directories = "6"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"], optional = true }
 eventsource-stream = { version = "0.2", optional = true }
 tracing-subscriber = { workspace = true, optional = true }
-sublime-syntaxes = "0.2.0"
 uuid = { version = "1.23.1", features = ["serde", "v4"] }
 inventory = "0.3.24"
 url = "2.5.8"

@@ -3,6 +3,7 @@ use comrak::nodes::{
     ListType, NodeCode, NodeCodeBlock, NodeHeading, NodeLink, NodeMath, NodeValue,
 };
 use comrak::{parse_document, Arena, Options};
+use markdown_table_formatter::format_tables;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 
@@ -14,9 +15,10 @@ pub(super) fn render_markdown_message(
     content: &str,
     syntax_highlighter: fn(&str, &str) -> String,
 ) -> Vec<Line<'static>> {
+    let formatted = format_tables(content);
     let arena = Arena::new();
     let options = Options::default();
-    let root = parse_document(&arena, content, &options);
+    let root = parse_document(&arena, &formatted, &options);
     let mut renderer = MarkdownRenderer::new(syntax_highlighter);
     renderer.render_document(root);
     renderer.finish()

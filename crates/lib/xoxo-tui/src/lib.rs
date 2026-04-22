@@ -4,6 +4,7 @@
 //! binary crate. It wraps the daemon's in-process bus as a TUI client.
 
 mod app;
+mod syntax_highlighter;
 mod tool_format;
 mod tui;
 mod ui;

@@ -34,12 +34,6 @@ fn custom_rust_syntax_set() -> &'static SyntaxSet {
     })
 }
 
-/// List all available syntax highlighting themes
-pub fn list_themes() -> Vec<String> {
-    let ts = ThemeSet::load_defaults();
-    ts.themes.keys().map(|s| s.to_string()).collect()
-}
-
 pub fn highlight_syntax(extension: &str, file_content: &str) -> String {
     let ps = match extension {
         "toml" | "tml" => custom_toml_syntax_set(),

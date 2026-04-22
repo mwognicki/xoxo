@@ -7,15 +7,11 @@ mod daemon;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::path::Path;
 use std::sync::Arc;
 use uuid::Uuid;
-use xoxo_core::syntax_highlighter::highlight_syntax;
 
-use nerd::tools::read_file::ReadFileTool;
 use xoxo_core::config::load_config;
 use xoxo_core::storage::bootstrap_storage;
-use xoxo_core::tooling::ToolContext;
 
 #[derive(Parser)]
 #[command(name = "xoxo", version, about)]
@@ -38,18 +34,6 @@ enum Command {
 
 #[derive(Subcommand)]
 enum DevCommand {
-    /// Read file contents with optional line range
-    ReadFile {
-        /// File path (absolute or relative to PWD)
-        file_path: String,
-        /// Optional line range in format "start:end" (1-indexed, inclusive)
-        line_range: Option<String>,
-        /// Include noise in output (default: false)
-        #[arg(long, default_value_t = false)]
-        with_noise: bool,
-    },
-    /// List available syntax highlighting themes
-    ListThemes,
     /// Dump a raw persisted chat snapshot from sled before deserializing it
     DumpStoredChat {
         /// Root chat id to inspect
@@ -73,14 +57,6 @@ async fn main() -> Result<()> {
         #[cfg(feature = "tui")]
         Command::Tui => run_tui(storage).await,
         Command::Dev(dev_cmd) => match dev_cmd {
-            DevCommand::ReadFile { file_path, line_range, with_noise } => {
-                handle_read_file(file_path, line_range, with_noise).await?;
-                Ok(())
-            }
-            DevCommand::ListThemes => {
-                handle_list_themes()?;
-                Ok(())
-            }
             DevCommand::DumpStoredChat { chat_id, last_used } => {
                 handle_dump_stored_chat(storage.as_ref(), chat_id, last_used)?;
                 Ok(())
@@ -91,17 +67,6 @@ async fn main() -> Result<()> {
             }
         },
     }
-}
-
-/// Handle the list themes command
-fn handle_list_themes() -> Result<()> {
-    use xoxo_core::syntax_highlighter::list_themes;
-
-    let themes = list_themes();
-    for (i, theme) in themes.iter().enumerate() {
-        println!("{:>3}. {}", i + 1, theme);
-    }
-    Ok(())
 }
 
 /// Dump a raw persisted chat snapshot from sled without deserializing it.
@@ -145,55 +110,6 @@ fn handle_purge_storage(storage: Arc<xoxo_core::storage::Storage>) -> Result<()>
     let path = storage.path().to_path_buf();
     storage.purge()?;
     println!("Purged storage at {}", path.display());
-    Ok(())
-}
-
-/// Handle the read file command
-async fn handle_read_file(
-    file_path: String,
-    line_range: Option<String>,
-    with_noise: bool,
-) -> Result<()> {
-    let tool_context = ToolContext {
-        execution_context: None,
-        spawner: None,
-    };
-
-    let output = match ReadFileTool
-        .execute(&tool_context, &file_path, line_range.as_deref(), with_noise)
-        .await
-    {
-        Ok(output) => output,
-        Err(err) => {
-            eprintln!("Error: {:?}", err);
-            std::process::exit(1);
-        }
-    };
-
-    let content = output["content"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("read_file returned non-string content"))?;
-    let total_lines = output["total_lines"]
-        .as_u64()
-        .ok_or_else(|| anyhow::anyhow!("read_file returned non-numeric total_lines"))?;
-
-    // Get file extension for syntax highlighting
-    let extension = Path::new(&file_path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("txt");
-
-    // Apply syntax highlighting
-    let highlighted_content = highlight_syntax(extension, content);
-
-    // Print with line numbers
-    for (line_num, line) in highlighted_content.lines().enumerate() {
-        println!("\x1b[38;5;235m{:>4} |\x1b[0m {}\x1b[0m", line_num + 1, line);
-    }
-    println!("\n---");
-    println!("Total lines in file: {}", total_lines);
-    println!("Lines displayed: {}", content.lines().count());
-
     Ok(())
 }
 

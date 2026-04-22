@@ -21,6 +21,9 @@ ratatui = "0.30"
 crossterm = "0.29"
 ansi-to-tui = "8"
 unicode-width = "0.2"
+markdown-table-formatter = "0.3.0"
+syntect = "5.3"
+sublime-syntaxes = "0.2.0"
 
 [lints]
 workspace = true

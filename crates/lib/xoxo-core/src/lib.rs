@@ -9,7 +9,6 @@ pub mod app_state;
 pub mod model_catalog;
 pub mod storage;
 
-pub mod syntax_highlighter;
 pub mod tooling;
 pub mod helpers;
 

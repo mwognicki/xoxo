@@ -2,7 +2,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use xoxo_core::bus::{BusPayload, TurnEvent};
 use xoxo_core::chat::structs::{ChatTextRole, ChatToolCallId, ToolCallEvent, ToolCallStarted};
-use xoxo_core::syntax_highlighter::highlight_syntax;
+use crate::syntax_highlighter::highlight_syntax;
 
 use crate::app::{App, HistoryEntry, HistoryPayload};
 use crate::tool_format;
