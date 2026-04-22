@@ -6,6 +6,8 @@ use crate::tools::{
 };
 use crate::tools::find_files::FindFilesTool;
 use crate::tools::find_patterns::FindPatternsTool;
+use crate::tools::find_symbol::FindSymbolTool;
+use crate::tools::inspect_code_structure::InspectCodeStructureTool;
 
 /// Build the root nerd agent's system prompt.
 ///
@@ -58,6 +60,8 @@ fn base_tool_schemas() -> Vec<ToolSchema> {
         ProcessTool::new().schema(),
         FindPatternsTool::new().schema(),
         FindFilesTool::new().schema(),
+        InspectCodeStructureTool::new().schema(),
+        FindSymbolTool::new().schema(),
     ]
 }
 

@@ -13,5 +13,7 @@ pub mod eval_script;
 pub mod patch_file;
 pub mod find_patterns;
 pub mod find_files;
+pub mod inspect_code_structure;
+pub mod find_symbol;
 
 pub use agentix::tools::list_all_tools;
