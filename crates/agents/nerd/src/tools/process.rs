@@ -3,7 +3,10 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
-use xoxo_core::tooling::{ErasedTool, ManagedProcess, Tool, ToolContext, ToolError, ToolExecutionContext, ToolRegistration, ToolSchema};
+use agentix::tooling::{
+    ErasedTool, ManagedProcess, Tool, ToolContext, ToolError, ToolExecutionContext,
+    ToolRegistration, ToolSchema,
+};
 // ---------------------------------------------------------------------------
 // Input types
 // ---------------------------------------------------------------------------

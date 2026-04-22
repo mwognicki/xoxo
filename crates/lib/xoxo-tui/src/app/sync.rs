@@ -1,8 +1,10 @@
+use anyhow::{anyhow, Result};
+use uuid::Uuid;
 use xoxo_core::bus::{BusEvent, BusPayload, TurnEvent};
 use xoxo_core::chat::structs::{Chat, ChatTextRole};
 use xoxo_core::chat::to_user_facing_chat;
 
-use crate::app::history::{HistoryEntry, HistoryPayload};
+use crate::app::history::{history_from_chat, HistoryEntry, HistoryPayload};
 use crate::app::stats::derive_model_stats;
 use crate::app::App;
 
@@ -82,6 +84,29 @@ impl App {
         self.context_left_percent = context_left_percent;
         self.max_input_tokens = max_input_tokens;
         self.estimated_cost_usd = estimated_cost_usd;
+    }
+
+    pub fn load_chat_session(&mut self, chat_id: Uuid) -> Result<()> {
+        let storage = self
+            .storage
+            .as_ref()
+            .ok_or_else(|| anyhow!("session loading requires storage"))?
+            .clone();
+        let chat = storage
+            .load_chat(chat_id)?
+            .ok_or_else(|| anyhow!("stored chat {chat_id} was not found"))?;
+
+        self.active_chat_id = Some(chat.id);
+        self.pending_submission = None;
+        self.history = history_from_chat(&chat);
+        self.in_flight_text.clear();
+        self.in_flight_thinking.clear();
+        self.conversation_scroll_from_bottom = 0;
+        self.turn_in_progress = false;
+        self.last_turn_finish_reason = None;
+        self.sync_chat_summary(&chat);
+        storage.set_last_used_chat_id(chat.id)?;
+        Ok(())
     }
 
     pub(super) fn reset_for_new_chat(&mut self) {

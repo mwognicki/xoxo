@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use xoxo_core::tooling::{ErasedTool, Tool, ToolContext, ToolError, ToolRegistration, ToolSchema};
+use agentix::tooling::{
+    ErasedTool, Tool, ToolContext, ToolError, ToolRegistration, ToolSchema,
+};
 
 /// Error type for write_file operations
 #[derive(Debug)]
@@ -186,7 +188,7 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tempfile::NamedTempFile;
-    use xoxo_core::tooling::{Tool, ToolContext};
+    use agentix::tooling::{Tool, ToolContext};
 
     static CALLBACK_CALLED: AtomicBool = AtomicBool::new(false);
 

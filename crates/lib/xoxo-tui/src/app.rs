@@ -1,6 +1,7 @@
 //! Application state.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use uuid::Uuid;
@@ -8,13 +9,16 @@ use xoxo_core::app_state::AppStateRepository;
 use xoxo_core::chat::structs::Chat;
 use xoxo_core::chat::to_user_facing_chat;
 use xoxo_core::llm::LlmFinishReason;
+use xoxo_core::storage::Storage;
 
 mod events;
 mod history;
+mod modal;
 mod stats;
 mod sync;
 
 pub use history::{HistoryEntry, HistoryPayload};
+pub use modal::{Modal, ModalContent, ModalMenu, ModalMenuItem};
 
 use history::history_from_chat;
 use stats::derive_model_stats;
@@ -56,8 +60,8 @@ pub struct App {
     pub in_flight_thinking: HashMap<Uuid, String>,
     /// Manual scroll offset measured upward from the bottom of the conversation pane.
     pub conversation_scroll_from_bottom: usize,
-    /// Current modal content (if any).
-    pub modal_content: Option<String>,
+    /// Current modal overlay (if any).
+    pub modal: Option<Modal>,
     /// Counter for consecutive Ctrl+C presses.
     pub ctrl_c_count: u8,
     /// Start time used for lightweight UI animations.
@@ -71,6 +75,7 @@ pub struct App {
     /// When `false` the TUI gives up scroll-wheel events so that the terminal
     /// can perform native drag-to-select. Toggled at runtime via `Ctrl+S`.
     pub mouse_capture_enabled: bool,
+    pub(crate) storage: Option<Arc<Storage>>,
 }
 
 /// Available UI layout variants.
@@ -85,6 +90,10 @@ impl App {
     const MOUSE_SCROLL_LINES: usize = 3;
 
     pub fn new(restored_chat: Option<Chat>) -> Self {
+        Self::new_with_storage(restored_chat, None)
+    }
+
+    pub fn new_with_storage(restored_chat: Option<Chat>, storage: Option<Arc<Storage>>) -> Self {
         let app_state = AppStateRepository::new().load_or_create().ok();
         let restored_summary = restored_chat.as_ref().map(to_user_facing_chat);
         let active_chat_id = restored_chat.as_ref().map(|chat| chat.id);
@@ -140,12 +149,13 @@ impl App {
             in_flight_text: HashMap::new(),
             in_flight_thinking: HashMap::new(),
             conversation_scroll_from_bottom: 0,
-            modal_content: None,
+            modal: None,
             ctrl_c_count: 0,
             started_at: Instant::now(),
             turn_in_progress: false,
             last_turn_finish_reason: None,
             mouse_capture_enabled: true,
+            storage,
         }
     }
 

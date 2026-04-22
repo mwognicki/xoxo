@@ -256,12 +256,13 @@ mod tests {
             in_flight_text: std::collections::HashMap::new(),
             in_flight_thinking: std::collections::HashMap::new(),
             conversation_scroll_from_bottom: 0,
-            modal_content: None,
+            modal: None,
             ctrl_c_count: 0,
             started_at: Instant::now(),
             turn_in_progress: false,
             last_turn_finish_reason: None,
             mouse_capture_enabled: true,
+            storage: None,
         }
     }
 

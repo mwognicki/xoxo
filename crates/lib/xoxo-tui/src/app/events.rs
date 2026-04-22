@@ -1,14 +1,12 @@
 use anyhow::Result;
+use chrono::{DateTime, Local};
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
+use uuid::Uuid;
+use xoxo_core::storage::ChatSessionSummary;
 
-use crate::app::{App, LayoutMode};
+use crate::app::{App, LayoutMode, Modal, ModalMenu, ModalMenuItem};
 
-impl App {
-    /// Check if a command should be activated and show modal
-    fn check_command_activation(&mut self) {
-        self.modal_content = match self.input.as_str() {
-            "/help" => Some(
-                "
+const HELP_BODY: &str = "
 Available Commands:
   /help    - Show this help message
   /quit    - Exit the application
@@ -22,18 +20,50 @@ Navigation:
   Home/End - Jump to top/bottom
   Ctrl+C   - Exit (press twice)
 
-Type your message and press Enter to send."
-                    .to_string(),
-            ),
-            _ => None,
+Type your message and press Enter to send.";
+
+const HELP_FOOTER: &str = " Esc to close ";
+const SESSIONS_PAGE_SIZE: usize = 10;
+const SESSIONS_FOOTER: &str = " Up/Down select  Left/Right page  Enter load later  Esc close ";
+
+impl App {
+    /// Open the help modal overlay.
+    fn open_help_modal(&mut self) {
+        self.modal = Some(Modal::text(" Help ", HELP_BODY, HELP_FOOTER));
+    }
+
+    /// Open the sessions modal overlay.
+    fn open_sessions_modal(&mut self) -> Result<()> {
+        let sessions = match &self.storage {
+            Some(storage) => storage.list_chat_sessions()?,
+            None => Vec::new(),
         };
+        let items = sessions
+            .iter()
+            .map(session_summary_item)
+            .collect::<Vec<_>>();
+        self.modal = Some(Modal::menu(
+            " Sessions ",
+            ModalMenu::new(items, SESSIONS_PAGE_SIZE, "No stored sessions found."),
+            SESSIONS_FOOTER,
+        ));
+        Ok(())
+    }
+
+    fn selected_modal_chat_id(&self) -> Option<Uuid> {
+        self.modal
+            .as_ref()
+            .and_then(Modal::selected_value)
+            .and_then(selected_chat_id_from_value)
     }
 
     pub fn handle_event(&mut self, event: Event) -> Result<()> {
         match event {
             Event::Paste(content) => {
+                if self.modal.is_some() {
+                    return Ok(());
+                }
                 self.input.push_str(&content);
-                self.check_command_activation();
             }
             Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
@@ -50,6 +80,23 @@ Type your message and press Enter to send."
                     return Ok(());
                 } else {
                     self.ctrl_c_count = 0;
+                }
+
+                // While a modal is open, swallow every key except Esc so the
+                // user can't accidentally submit input or trigger commands
+                // behind the overlay.
+                if self.modal.is_some() {
+                    if matches!(key.code, KeyCode::Esc) {
+                        self.modal = None;
+                    } else if matches!(key.code, KeyCode::Enter) {
+                        if let Some(chat_id) = self.selected_modal_chat_id() {
+                            self.load_chat_session(chat_id)?;
+                            self.modal = None;
+                        }
+                    } else if let Some(modal) = &mut self.modal {
+                        modal.handle_navigation_key(key.code);
+                    }
+                    return Ok(());
                 }
 
                 let is_ctrl_s = matches!(key.code, KeyCode::Char('s'))
@@ -82,7 +129,6 @@ Type your message and press Enter to send."
                             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                     {
                         self.input.push(c);
-                        self.check_command_activation();
                     }
                     KeyCode::Backspace => {
                         self.input.pop();
@@ -92,12 +138,13 @@ Type your message and press Enter to send."
                         match line.as_str() {
                             "/quit" => self.running = false,
                             "/clear" | "/new" => self.reset_for_new_chat(),
+                            "/help" => self.open_help_modal(),
+                            "/sessions" => self.open_sessions_modal()?,
                             _ if !line.is_empty() && !line.starts_with('/') => {
                                 self.pending_submission = Some(line);
                             }
                             _ => {}
                         }
-                        self.modal_content = None;
                     }
                     _ => {}
                 }
@@ -127,15 +174,52 @@ Type your message and press Enter to send."
     }
 }
 
+fn session_summary_item(session: &ChatSessionSummary) -> ModalMenuItem {
+    ModalMenuItem {
+        label: format!(
+            "{:<17}",
+            session
+                .updated_at
+                .as_deref()
+                .map(format_session_updated_at)
+                .unwrap_or_else(|| "unknown time".to_string())
+        ),
+        detail: session.model_name.clone(),
+        value: Some(session.id.to_string()),
+    }
+}
+
+fn selected_chat_id_from_value(value: &str) -> Option<Uuid> {
+    Uuid::parse_str(value).ok()
+}
+
+fn format_session_updated_at(updated_at: &str) -> String {
+    DateTime::parse_from_rfc3339(updated_at)
+        .map(|timestamp| {
+            timestamp
+                .with_timezone(&Local)
+                .format("%b %-d, %Y %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| updated_at.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use std::sync::Arc;
+
     use crossterm::event::{KeyEvent, KeyModifiers};
     use uuid::Uuid;
     use xoxo_core::bus::BusPayload;
-    use xoxo_core::chat::structs::{ChatTextMessage, ChatTextRole};
+    use xoxo_core::chat::structs::{
+        ApiCompatibility, ApiProvider, BranchId, Chat, ChatAgent, ChatBranch, ChatEvent,
+        ChatEventBody, ChatLogEntry, ChatTextMessage, ChatTextRole, MessageContextState, MessageId,
+        ModelConfig,
+    };
     use xoxo_core::llm::LlmFinishReason;
+    use xoxo_core::storage::Storage;
 
     use crate::app::{HistoryEntry, HistoryPayload};
 
@@ -150,6 +234,56 @@ mod tests {
             KeyModifiers::NONE,
         )))
         .expect("char event");
+    }
+
+    fn sample_chat(chat_id: Uuid, model_name: &str, message: &str) -> Chat {
+        Chat {
+            title: Some("Example".to_string()),
+            id: chat_id,
+            created_at: Some("2026-04-01T00:00:00Z".to_string()),
+            updated_at: Some("2026-04-01T00:00:00Z".to_string()),
+            parent_chat_id: None,
+            spawned_by_tool_call_id: None,
+            path: format!("chats/{chat_id}.json"),
+            agent: ChatAgent {
+                id: None,
+                name: Some("nerd".to_string()),
+                model: ModelConfig {
+                    model_name: model_name.to_string(),
+                    provider: ApiProvider {
+                        name: "OpenAI".to_string(),
+                        compatibility: ApiCompatibility::OpenAi,
+                    },
+                },
+                base_prompt: "You are helpful.".to_string(),
+                allowed_tools: Vec::new(),
+                allowed_skills: Vec::new(),
+            },
+            observability: None,
+            active_branch_id: BranchId("main".to_string()),
+            branches: vec![ChatBranch {
+                id: BranchId("main".to_string()),
+                name: "Main".to_string(),
+                parent_branch_id: None,
+                forked_from_message_id: None,
+                head_message_id: Some(MessageId("message-1".to_string())),
+                active_snapshot_id: None,
+            }],
+            snapshots: Vec::new(),
+            events: vec![ChatLogEntry {
+                event: ChatEvent {
+                    id: MessageId("message-1".to_string()),
+                    parent_id: None,
+                    branch_id: BranchId("main".to_string()),
+                    body: ChatEventBody::Message(ChatTextMessage {
+                        role: ChatTextRole::User,
+                        content: message.to_string(),
+                    }),
+                    observability: None,
+                },
+                context_state: MessageContextState::Active,
+            }],
+        }
     }
 
     #[test]
@@ -246,5 +380,101 @@ mod tests {
         press_enter(&mut app);
 
         assert!(!app.running);
+    }
+
+    fn press_key(app: &mut App, code: KeyCode) {
+        app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+            .expect("key event");
+    }
+
+    #[test]
+    fn help_command_opens_modal_on_enter() {
+        let mut app = App::new(None);
+        app.input = "/help".to_string();
+
+        press_enter(&mut app);
+
+        assert!(app.modal.is_some(), "help modal should be open");
+        let modal = app.modal.as_ref().expect("modal present");
+        assert!(
+            !modal.footer.is_empty(),
+            "help modal footer must advertise its key bindings"
+        );
+        assert_eq!(app.input, "", "input buffer is drained by Enter");
+    }
+
+    #[test]
+    fn typing_help_without_enter_does_not_open_modal() {
+        let mut app = App::new(None);
+
+        for character in "/help".chars() {
+            press_char(&mut app, character);
+        }
+
+        assert!(
+            app.modal.is_none(),
+            "modal must not auto-open while typing — only on Enter"
+        );
+    }
+
+    #[test]
+    fn enter_while_modal_open_does_not_close_it() {
+        let mut app = App::new(None);
+        app.open_help_modal();
+
+        press_enter(&mut app);
+
+        assert!(
+            app.modal.is_some(),
+            "Enter must not close modals — only Esc does"
+        );
+    }
+
+    #[test]
+    fn typing_while_modal_open_does_not_reach_input() {
+        let mut app = App::new(None);
+        app.open_help_modal();
+
+        press_char(&mut app, 'x');
+
+        assert_eq!(
+            app.input, "",
+            "keystrokes must be swallowed while a modal is open"
+        );
+        assert!(app.modal.is_some());
+    }
+
+    #[test]
+    fn esc_closes_modal() {
+        let mut app = App::new(None);
+        app.open_help_modal();
+
+        press_key(&mut app, KeyCode::Esc);
+
+        assert!(app.modal.is_none(), "Esc must close the modal");
+    }
+
+    #[test]
+    fn enter_on_selected_session_loads_persisted_chat() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let storage = Storage::open_at(tempdir.path().join("data")).expect("storage");
+        let chat_id = Uuid::new_v4();
+        let chat = sample_chat(chat_id, "gpt-5.4", "resume this");
+        storage.save_chat(&chat).expect("save chat");
+        let storage = Arc::new(storage);
+        let mut app = App::new_with_storage(None, Some(storage.clone()));
+        app.input = "/sessions".to_string();
+
+        press_enter(&mut app);
+        press_enter(&mut app);
+
+        assert!(app.modal.is_none());
+        assert_eq!(app.active_chat_id, Some(chat_id));
+        assert_eq!(app.current_model_name, "gpt-5.4");
+        assert_eq!(app.history.len(), 1);
+        assert_eq!(
+            storage.last_used_chat_id().expect("last used chat id"),
+            Some(chat_id)
+        );
     }
 }

@@ -15,6 +15,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 uuid = { version = "1" }
+chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 comrak = "0.52.0"
 
 ratatui = "0.30"
@@ -24,6 +25,9 @@ unicode-width = "0.2"
 markdown-table-formatter = "0.3.0"
 syntect = "5.3"
 sublime-syntaxes = "0.2.0"
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

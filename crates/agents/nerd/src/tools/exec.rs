@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use serde::Deserialize;
-use xoxo_core::tooling::{
+use agentix::tooling::{
     ErasedTool, Tool, ToolContext, ToolError, ToolExecutionContext, ToolRegistration, ToolSchema,
 };
 

@@ -4,7 +4,9 @@ use ignore::WalkBuilder;
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use xoxo_core::tooling::{ErasedTool, Tool, ToolContext, ToolError, ToolRegistration, ToolSchema};
+use agentix::tooling::{
+    ErasedTool, Tool, ToolContext, ToolError, ToolRegistration, ToolSchema,
+};
 
 #[derive(Debug, Deserialize)]
 struct FindFilesInput {

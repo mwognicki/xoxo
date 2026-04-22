@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use xoxo_core::tooling::{ErasedTool, Tool, ToolContext, ToolError, ToolRegistration, ToolSchema};
+use crate::tooling::{ErasedTool, Tool, ToolContext, ToolError, ToolRegistration, ToolSchema};
 
 /// Returns the name and description of every tool registered in the system.
 ///

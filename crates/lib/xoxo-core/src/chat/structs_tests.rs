@@ -5,6 +5,8 @@ fn chat_is_serde_ready() {
     let chat = Chat {
         title: Some("Example".to_string()),
         id: Uuid::nil(),
+        created_at: Some("2026-04-01T00:00:00Z".to_string()),
+        updated_at: Some("2026-04-01T00:00:00Z".to_string()),
         parent_chat_id: Some(Uuid::from_u128(1)),
         spawned_by_tool_call_id: Some(ChatToolCallId("tool-parent-1".to_string())),
         path: "chats/example.json".to_string(),
@@ -195,6 +197,47 @@ fn chat_is_serde_ready() {
 
     assert_eq!(back, chat);
     assert_eq!(back.path, "chats/example.json");
+}
+
+#[test]
+fn chat_defaults_missing_timestamps_for_legacy_snapshots() {
+    let json = serde_json::json!({
+        "title": "Legacy",
+        "id": "00000000-0000-0000-0000-000000000000",
+        "parent_chat_id": null,
+        "spawned_by_tool_call_id": null,
+        "path": "chats/legacy.json",
+        "agent": {
+            "id": null,
+            "name": "helper",
+            "model": {
+                "model_name": "gpt-5.4",
+                "provider": {
+                    "name": "OpenAI",
+                    "compatibility": { "kind": "open_ai" }
+                }
+            },
+            "base_prompt": "You are helpful.",
+            "allowed_tools": [],
+            "allowed_skills": []
+        },
+        "observability": null,
+        "active_branch_id": "main",
+        "branches": [],
+        "snapshots": [],
+        "events": []
+    });
+
+    let chat: Chat = serde_json::from_value(json).unwrap();
+
+    assert_eq!(
+        chat.created_at,
+        Some("2026-04-01T00:00:00Z".to_string())
+    );
+    assert_eq!(
+        chat.updated_at,
+        Some("2026-04-01T00:00:00Z".to_string())
+    );
 }
 
 #[test]

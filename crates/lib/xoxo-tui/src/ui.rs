@@ -14,7 +14,10 @@ use crate::app::{App, LayoutMode};
 
 mod history;
 mod markdown;
+mod modal;
 mod tool_lines;
+
+use modal::render_modal;
 
 pub(crate) use tool_lines::{default_tool_byline, default_tool_result_lines};
 
@@ -340,32 +343,6 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) 
             );
         frame.render_widget(status_paragraph, area);
     }
-}
-
-fn render_modal(frame: &mut Frame, app: &App) {
-    let Some(modal_content) = &app.modal_content else {
-        return;
-    };
-
-    let modal_area = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(30),
-            Constraint::Length(15),
-            Constraint::Percentage(30),
-        ])
-        .split(frame.area())[1];
-
-    let modal_paragraph = Paragraph::new(modal_content.clone())
-        .style(Style::default().fg(Color::White))
-        .block(
-            Block::default()
-                .title(" Help ")
-                .title_alignment(Alignment::Center)
-                .borders(Borders::ALL)
-                .style(Style::default().bg(Color::DarkGray)),
-        );
-    frame.render_widget(modal_paragraph, modal_area);
 }
 
 fn draw_alternate(frame: &mut Frame) {

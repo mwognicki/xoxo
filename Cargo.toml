@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/bin/xoxo",
+    "crates/agents/agentix",
     "crates/lib/xoxo-core",
     "crates/lib/xoxo-tui",
     "crates/agents/nerd",
@@ -17,6 +18,7 @@ publish = false
 
 [workspace.dependencies]
 # Internal
+agentix = { path = "crates/agents/agentix" }
 xoxo-core = { path = "crates/lib/xoxo-core" }
 xoxo-tui = { path = "crates/lib/xoxo-tui" }
 nerd = { path = "crates/agents/nerd" }

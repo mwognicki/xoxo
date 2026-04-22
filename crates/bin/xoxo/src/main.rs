@@ -133,7 +133,7 @@ async fn run_tui(storage: Arc<xoxo_core::storage::Storage>) -> Result<()> {
         },
         None => None,
     };
-    let mut app = App::new(restored_chat);
+    let mut app = App::new_with_storage(restored_chat, Some(storage.clone()));
     let (bus, inbox) = Bus::new();
     let mut events = bus.subscribe_events();
     let _daemon = daemon::spawn_daemon(bus.clone(), inbox, storage.clone());

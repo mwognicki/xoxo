@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::Deserialize;
-use xoxo_core::tooling::{ErasedTool, Tool, ToolContext, ToolError, ToolRegistration, ToolSchema};
+use agentix::tooling::{
+    ErasedTool, Tool, ToolContext, ToolError, ToolRegistration, ToolSchema,
+};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 

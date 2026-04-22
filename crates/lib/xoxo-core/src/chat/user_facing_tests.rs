@@ -78,6 +78,8 @@ fn sample_chat(observability: Option<CostObservability>) -> Chat {
     Chat {
         title: Some("Example".to_string()),
         id: Uuid::nil(),
+        created_at: Some("2026-04-01T00:00:00Z".to_string()),
+        updated_at: Some("2026-04-01T00:00:00Z".to_string()),
         parent_chat_id: None,
         spawned_by_tool_call_id: None,
         path: "chats/example.json".to_string(),

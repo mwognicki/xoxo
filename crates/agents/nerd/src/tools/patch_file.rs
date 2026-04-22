@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use xoxo_core::tooling::{ErasedTool, Tool, ToolContext, ToolError, ToolRegistration, ToolSchema};
+use agentix::tooling::{
+    ErasedTool, Tool, ToolContext, ToolError, ToolRegistration, ToolSchema,
+};
 
 /// A single file update operation addressed against the original file.
 #[derive(Debug, Deserialize)]
@@ -367,7 +369,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{LazyLock, Mutex};
     use tempfile::NamedTempFile;
-    use xoxo_core::tooling::{Tool, ToolContext};
+    use agentix::tooling::{Tool, ToolContext};
 
     static CALLBACK_CALLED: AtomicBool = AtomicBool::new(false);
     static PRE_HOOK_DATA: LazyLock<Mutex<Option<(String, String)>>> =

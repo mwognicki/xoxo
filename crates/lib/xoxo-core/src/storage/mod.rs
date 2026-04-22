@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
-use crate::chat::structs::Chat;
+use crate::chat::structs::{Chat, current_chat_timestamp};
 use crate::config::xoxo_dir;
 
 const CHATS_TREE: &str = "chats";
@@ -15,6 +15,17 @@ const LAST_USED_CHAT_ID_KEY: &[u8] = b"last_used_chat_id";
 pub struct Storage {
     db: sled::Db,
     path: PathBuf,
+}
+
+/// Lightweight metadata for a persisted chat session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChatSessionSummary {
+    /// Persisted chat id.
+    pub id: Uuid,
+    /// Last persisted update timestamp for the chat.
+    pub updated_at: Option<String>,
+    /// Model name configured for the chat's agent.
+    pub model_name: String,
 }
 
 impl Storage {
@@ -83,6 +94,8 @@ impl Storage {
     /// # let chat = Chat {
     /// #     title: Some("Example".to_string()),
     /// #     id: Uuid::nil(),
+    /// #     created_at: Some("2026-04-01T00:00:00Z".to_string()),
+    /// #     updated_at: Some("2026-04-01T00:00:00Z".to_string()),
     /// #     parent_chat_id: None,
     /// #     spawned_by_tool_call_id: None,
     /// #     path: "chats/example.json".to_string(),
@@ -118,8 +131,13 @@ impl Storage {
     /// ```
     pub fn save_chat(&self, chat: &Chat) -> Result<(), StorageError> {
         let chats = self.db.open_tree(CHATS_TREE)?;
-        let encoded = serde_json::to_vec(chat)?;
-        chats.insert(chat.id.to_string().as_bytes(), encoded)?;
+        let mut snapshot = chat.clone();
+        snapshot
+            .created_at
+            .get_or_insert_with(current_chat_timestamp);
+        snapshot.updated_at = Some(current_chat_timestamp());
+        let encoded = serde_json::to_vec(&snapshot)?;
+        chats.insert(snapshot.id.to_string().as_bytes(), encoded)?;
         self.db.flush()?;
         Ok(())
     }
@@ -179,6 +197,48 @@ impl Storage {
             .get(chat_id.to_string().as_bytes())?
             .map(|encoded| String::from_utf8(encoded.to_vec()).map_err(StorageError::from))
             .transpose()
+    }
+
+    /// Lists persisted chat sessions ordered from most recently updated to oldest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when sled reads or chat snapshot deserialization fail.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # let storage = xoxo_core::storage::Storage::open_at(tempfile::tempdir()?.path().join("data"))?;
+    /// let sessions = storage.list_chat_sessions()?;
+    /// assert!(sessions.is_empty());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn list_chat_sessions(&self) -> Result<Vec<ChatSessionSummary>, StorageError> {
+        let chats = self.db.open_tree(CHATS_TREE)?;
+        let mut sessions = chats
+            .iter()
+            .map(|entry| {
+                let (_, encoded) = entry?;
+                let raw = String::from_utf8(encoded.to_vec())?;
+                let chat = parse_chat_snapshot(&raw)?;
+                Ok(ChatSessionSummary {
+                    id: chat.id,
+                    updated_at: chat.updated_at,
+                    model_name: chat.agent.model.model_name,
+                })
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        sessions.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(sessions)
     }
 
     /// Persists the last used root chat id.
@@ -401,6 +461,8 @@ mod tests {
         Chat {
             title: Some("Example".to_string()),
             id: chat_id,
+            created_at: Some("2026-04-01T00:00:00Z".to_string()),
+            updated_at: Some("2026-04-01T00:00:00Z".to_string()),
             parent_chat_id: None,
             spawned_by_tool_call_id: None,
             path: format!("chats/{chat_id}.json"),
@@ -431,6 +493,13 @@ mod tests {
             snapshots: Vec::new(),
             events: Vec::new(),
         }
+    }
+
+    fn sample_chat_with_timestamp(chat_id: Uuid, updated_at: &str, model_name: &str) -> Chat {
+        let mut chat = sample_chat(chat_id);
+        chat.updated_at = Some(updated_at.to_string());
+        chat.agent.model.model_name = model_name.to_string();
+        chat
     }
 
     fn sample_started_tool_chat(chat_id: Uuid) -> Chat {
@@ -473,8 +542,13 @@ mod tests {
 
         storage.save_chat(&chat).expect("save chat");
 
-        let loaded = storage.load_chat(chat.id).expect("load chat");
-        assert_eq!(loaded, Some(chat));
+        let loaded = storage
+            .load_chat(chat.id)
+            .expect("load chat")
+            .expect("stored chat");
+        let mut expected = chat;
+        expected.updated_at = loaded.updated_at.clone();
+        assert_eq!(loaded, expected);
     }
 
     #[test]
@@ -514,6 +588,50 @@ mod tests {
         let raw = raw.expect("raw chat");
         assert!(raw.contains("\"tool_call_kind\":{\"kind\":\"generic\"}"));
         assert!(!raw.contains(",\"kind\":{\"kind\":\"generic\"}"));
+    }
+
+    #[test]
+    fn list_chat_sessions_returns_recent_sessions_first() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let storage = Storage::open_at(tempdir.path().join("data")).expect("storage");
+        let older = sample_chat_with_timestamp(
+            Uuid::new_v4(),
+            "2026-04-01T00:00:00Z",
+            "gpt-5.2",
+        );
+        let newer = sample_chat_with_timestamp(
+            Uuid::new_v4(),
+            "2026-04-02T00:00:00Z",
+            "gpt-5.4",
+        );
+        let chats = storage.db.open_tree(CHATS_TREE).expect("chats tree");
+
+        for chat in [&older, &newer] {
+            let raw = serde_json::to_vec(chat).expect("serialize chat");
+            chats
+                .insert(chat.id.to_string().as_bytes(), raw)
+                .expect("insert chat");
+        }
+
+        let sessions = storage
+            .list_chat_sessions()
+            .expect("list chat sessions");
+
+        assert_eq!(
+            sessions,
+            vec![
+                ChatSessionSummary {
+                    id: newer.id,
+                    updated_at: newer.updated_at.clone(),
+                    model_name: "gpt-5.4".to_string(),
+                },
+                ChatSessionSummary {
+                    id: older.id,
+                    updated_at: older.updated_at.clone(),
+                    model_name: "gpt-5.2".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]

@@ -9,6 +9,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agentix"
+version = "0.0.1"
+dependencies = [
+ "inventory",
+ "serde_json",
+ "xoxo-core",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -750,7 +759,7 @@ dependencies = [
 name = "concierge"
 version = "0.0.1"
 dependencies = [
- "xoxo-core",
+ "agentix",
 ]
 
 [[package]]
@@ -2423,6 +2432,7 @@ dependencies = [
 name = "nerd"
 version = "0.0.1"
 dependencies = [
+ "agentix",
  "futures",
  "ignore",
  "inventory",
@@ -5424,6 +5434,7 @@ name = "xoxo-core"
 version = "0.0.1"
 dependencies = [
  "ai-lib",
+ "chrono",
  "directories",
  "eventsource-stream",
  "futures",
@@ -5452,6 +5463,7 @@ version = "0.0.1"
 dependencies = [
  "ansi-to-tui",
  "anyhow",
+ "chrono",
  "comrak 0.52.0",
  "crossterm",
  "markdown-table-formatter",
@@ -5459,6 +5471,7 @@ dependencies = [
  "serde_json",
  "sublime-syntaxes",
  "syntect",
+ "tempfile",
  "tokio",
  "tracing",
  "unicode-width",

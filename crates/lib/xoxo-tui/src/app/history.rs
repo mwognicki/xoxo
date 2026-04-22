@@ -103,6 +103,8 @@ mod tests {
         let chat = Chat {
             title: None,
             id: Uuid::new_v4(),
+            created_at: Some("2026-04-01T00:00:00Z".to_string()),
+            updated_at: Some("2026-04-01T00:00:00Z".to_string()),
             parent_chat_id: None,
             spawned_by_tool_call_id: None,
             path: "root".to_string(),

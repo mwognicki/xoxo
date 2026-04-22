@@ -12,6 +12,7 @@ default = ["extension-language-detection"]
 extension-language-detection = []
 
 [dependencies]
+agentix = { workspace = true }
 xoxo-core = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

@@ -5,8 +5,20 @@
 
 #![allow(dead_code)] // Staged persistence model: serde-verified here, wired into runtime next.
 
+use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+const DEFAULT_CHAT_TIMESTAMP: &str = "2026-04-01T00:00:00Z";
+
+fn default_chat_timestamp() -> Option<String> {
+    Some(DEFAULT_CHAT_TIMESTAMP.to_string())
+}
+
+/// Returns the current UTC chat timestamp in the persisted wire format.
+pub fn current_chat_timestamp() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
+}
 
 /// Short reusable metadata for a tool known to the workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -330,6 +342,10 @@ pub struct ChatBranch {
 pub struct Chat {
     pub title: Option<String>,
     pub id: Uuid,
+    #[serde(default = "default_chat_timestamp")]
+    pub created_at: Option<String>,
+    #[serde(default = "default_chat_timestamp")]
+    pub updated_at: Option<String>,
     pub parent_chat_id: Option<Uuid>,
     pub spawned_by_tool_call_id: Option<ChatToolCallId>,
     pub path: String,

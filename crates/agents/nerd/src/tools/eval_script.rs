@@ -7,7 +7,9 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::time::{Duration, timeout};
 use xoxo_core::helpers::new_id;
-use xoxo_core::tooling::{ErasedTool, Tool, ToolContext, ToolError, ToolRegistration, ToolSchema};
+use agentix::tooling::{
+    ErasedTool, Tool, ToolContext, ToolError, ToolRegistration, ToolSchema,
+};
 use crate::types::ScriptLanguage;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 30;

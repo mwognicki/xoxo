@@ -4,7 +4,7 @@ use crate::chat::structs::{
     ApiCompatibility, ApiProvider, BranchId, Chat, ChatAgent, ChatBranch, ChatEvent,
     ChatEventBody, ChatLogEntry, ChatPath, ChatTextMessage, ChatTextRole, ChatToolCallId,
     MessageContextState, MessageId, ModelConfig, ToolCallCompleted, ToolCallEvent, ToolCallFailed,
-    ToolCallKind, ToolCallStarted,
+    ToolCallKind, ToolCallStarted, current_chat_timestamp,
 };
 use crate::config::ProviderConfig;
 use crate::llm::{
@@ -372,9 +372,12 @@ impl AgentSpawner {
     }
 
     fn build_chat_shell(&self, input: &SpawnInput, child_chat_id: Uuid) -> Chat {
+        let timestamp = current_chat_timestamp();
         Chat {
             title: Some(input.inline_spec.task.clone()),
             id: child_chat_id,
+            created_at: Some(timestamp.clone()),
+            updated_at: Some(timestamp),
             parent_chat_id: Some(*input.parent_path.current()),
             spawned_by_tool_call_id: None,
             path: format!("chats/{child_chat_id}.json"),
@@ -416,6 +419,7 @@ impl AgentSpawner {
     }
 
     fn build_root_chat_shell(&self, chat_id: Uuid, blueprint: &ChatAgent) -> Chat {
+        let timestamp = current_chat_timestamp();
         Chat {
             title: Some(
                 blueprint
@@ -424,6 +428,8 @@ impl AgentSpawner {
                     .unwrap_or_else(|| "root-agent".to_string()),
             ),
             id: chat_id,
+            created_at: Some(timestamp.clone()),
+            updated_at: Some(timestamp),
             parent_chat_id: None,
             spawned_by_tool_call_id: None,
             path: format!("chats/{chat_id}.json"),

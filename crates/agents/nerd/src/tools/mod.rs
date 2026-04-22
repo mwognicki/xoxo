@@ -11,6 +11,7 @@ pub mod process;
 pub mod exec;
 pub mod eval_script;
 pub mod patch_file;
-pub mod list_all_tools;
 pub mod find_patterns;
 pub mod find_files;
+
+pub use agentix::tools::list_all_tools;

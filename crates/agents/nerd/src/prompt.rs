@@ -1,4 +1,4 @@
-use xoxo_core::tooling::{Tool, ToolSchema};
+use agentix::tooling::{Tool, ToolSchema};
 
 use crate::tools::{
     eval_script::EvalScriptTool, exec::ExecTool, http::HttpTool, process::ProcessTool,

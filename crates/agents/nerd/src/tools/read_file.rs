@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use xoxo_core::tooling::{ErasedTool, Tool, ToolContext, ToolError, ToolRegistration, ToolSchema};
+use agentix::tooling::{
+    ErasedTool, Tool, ToolContext, ToolError, ToolRegistration, ToolSchema,
+};
 
 /// Import the noise stripper function
 use crate::coding::noise_stripper::strip_noise;
@@ -273,7 +275,7 @@ mod tests {
     use std::io::Write;
     use serde_json::json;
     use tempfile::NamedTempFile;
-    use xoxo_core::tooling::{Tool, ToolContext};
+    use agentix::tooling::{Tool, ToolContext};
 
     #[test]
     fn test_read_full_file() {
