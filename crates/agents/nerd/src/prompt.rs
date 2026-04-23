@@ -1,13 +1,17 @@
 use agentix::tooling::{Tool, ToolSchema};
 
 use crate::tools::{
-    eval_script::EvalScriptTool, exec::ExecTool, http::HttpTool, process::ProcessTool,
-    read_file::ReadFileTool,
+    ensure_import::EnsureImportTool, eval_script::EvalScriptTool, exec::ExecTool,
+    http::HttpTool, process::ProcessTool, read_file::ReadFileTool,
 };
 use crate::tools::find_files::FindFilesTool;
 use crate::tools::find_patterns::FindPatternsTool;
+use crate::tools::find_references::FindReferencesTool;
 use crate::tools::find_symbol::FindSymbolTool;
+use crate::tools::find_tests_for_symbol::FindTestsForSymbolTool;
 use crate::tools::inspect_code_structure::InspectCodeStructureTool;
+use crate::tools::patch_symbol::PatchSymbolTool;
+use crate::tools::rename_symbol::RenameSymbolTool;
 
 /// Build the root nerd agent's system prompt.
 ///
@@ -60,8 +64,13 @@ fn base_tool_schemas() -> Vec<ToolSchema> {
         ProcessTool::new().schema(),
         FindPatternsTool::new().schema(),
         FindFilesTool::new().schema(),
+        FindReferencesTool::new().schema(),
+        FindTestsForSymbolTool::new().schema(),
         InspectCodeStructureTool::new().schema(),
         FindSymbolTool::new().schema(),
+        RenameSymbolTool::new().schema(),
+        PatchSymbolTool::new().schema(),
+        EnsureImportTool::new().schema(),
     ]
 }
 
