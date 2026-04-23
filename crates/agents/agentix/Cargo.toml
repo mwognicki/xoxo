@@ -7,10 +7,26 @@ license.workspace = true
 publish.workspace = true
 description = "Shared agentic toolkit bindings for xoxo agents."
 
+[features]
+default = ["vector-store-brute-force"]
+# Indexing / vector-store implementations.
+#
+# Each implementation is a sibling feature selected at runtime by
+# `indexing::stores::selector`. Additional backends will be added as
+# further sibling features without reshaping the `VectorStore` trait
+# surface.
+vector-store-brute-force = []
+vector-store-hnsw-rs = ["dep:hnsw_rs"]
+vector-store-instant-distance = ["dep:instant-distance"]
+
 [dependencies]
 xoxo-core = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
 inventory = "0.3.24"
+hnsw_rs = { version = "0.3", optional = true }
+instant-distance = { version = "0.6", optional = true }
 
 [lints]
 workspace = true

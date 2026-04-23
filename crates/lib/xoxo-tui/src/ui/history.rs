@@ -257,6 +257,8 @@ mod tests {
             in_flight_thinking: std::collections::HashMap::new(),
             conversation_scroll_from_bottom: 0,
             modal: None,
+            mention_popup: None,
+            workspace_root: std::path::PathBuf::from("."),
             ctrl_c_count: 0,
             started_at: Instant::now(),
             turn_in_progress: false,

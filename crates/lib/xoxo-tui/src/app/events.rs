@@ -4,7 +4,7 @@ use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKin
 use uuid::Uuid;
 use xoxo_core::storage::ChatSessionSummary;
 
-use crate::app::{App, LayoutMode, Modal, ModalMenu, ModalMenuItem};
+use crate::app::{App, LayoutMode, MentionPopup, Modal, ModalMenu, ModalMenuItem};
 
 const HELP_BODY: &str = "
 Available Commands:
@@ -27,12 +27,10 @@ const SESSIONS_PAGE_SIZE: usize = 10;
 const SESSIONS_FOOTER: &str = " Up/Down select  Left/Right page  Enter load later  Esc close ";
 
 impl App {
-    /// Open the help modal overlay.
     fn open_help_modal(&mut self) {
         self.modal = Some(Modal::text(" Help ", HELP_BODY, HELP_FOOTER));
     }
 
-    /// Open the sessions modal overlay.
     fn open_sessions_modal(&mut self) -> Result<()> {
         let sessions = match &self.storage {
             Some(storage) => storage.list_chat_sessions()?,
@@ -63,6 +61,7 @@ impl App {
                 if self.modal.is_some() {
                     return Ok(());
                 }
+                self.mention_popup = None;
                 self.input.push_str(&content);
             }
             Event::Key(key) => {
@@ -82,9 +81,6 @@ impl App {
                     self.ctrl_c_count = 0;
                 }
 
-                // While a modal is open, swallow every key except Esc so the
-                // user can't accidentally submit input or trigger commands
-                // behind the overlay.
                 if self.modal.is_some() {
                     if matches!(key.code, KeyCode::Esc) {
                         self.modal = None;
@@ -97,6 +93,32 @@ impl App {
                         modal.handle_navigation_key(key.code);
                     }
                     return Ok(());
+                }
+
+                if self.mention_popup.is_some() {
+                    match key.code {
+                        KeyCode::Tab => {
+                            self.handle_mention_tab();
+                            return Ok(());
+                        }
+                        KeyCode::Enter => {
+                            self.commit_mention_selection();
+                            return Ok(());
+                        }
+                        KeyCode::Esc => {
+                            self.mention_popup = None;
+                            return Ok(());
+                        }
+                        KeyCode::Up => {
+                            self.mention_popup.as_mut().unwrap().select_prev();
+                            return Ok(());
+                        }
+                        KeyCode::Down => {
+                            self.mention_popup.as_mut().unwrap().select_next();
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
                 }
 
                 let is_ctrl_s = matches!(key.code, KeyCode::Char('s'))
@@ -148,6 +170,37 @@ impl App {
                     }
                     _ => {}
                 }
+
+                if let Some(popup) = &mut self.mention_popup {
+                    match key.code {
+                        KeyCode::Backspace => {
+                            if self.input.len() <= popup.trigger_at {
+                                self.mention_popup = None;
+                            } else {
+                                self.refresh_mention_filter();
+                            }
+                        }
+                        KeyCode::Char(c)
+                            if !key
+                                .modifiers
+                                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                        {
+                            if c.is_whitespace() {
+                                self.mention_popup = None;
+                            } else {
+                                self.refresh_mention_filter();
+                            }
+                        }
+                        _ => {}
+                    }
+                } else if let KeyCode::Char('@') = key.code
+                    && !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && self.input_allows_mention_popup()
+                {
+                    self.open_mention_popup();
+                }
             }
             Event::Mouse(mouse) => match mouse.kind {
                 MouseEventKind::ScrollUp => self.scroll_conversation_up(Self::MOUSE_SCROLL_LINES),
@@ -161,6 +214,91 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn open_mention_popup(&mut self) {
+        let trigger_at = self.input.len().saturating_sub(1);
+        debug_assert!(self.input.is_char_boundary(trigger_at));
+        match MentionPopup::open(&self.workspace_root, trigger_at) {
+            Ok(popup) => self.mention_popup = Some(popup),
+            Err(_) => self.mention_popup = None,
+        }
+    }
+
+    fn input_allows_mention_popup(&self) -> bool {
+        let trigger_at = self.input.len().saturating_sub(1);
+        self.input[..trigger_at]
+            .chars()
+            .next_back()
+            .is_none_or(char::is_whitespace)
+    }
+
+    fn refresh_mention_filter(&mut self) {
+        if let Some(popup) = &mut self.mention_popup {
+            let start = popup.trigger_at + 1;
+            let filter = if start < self.input.len() {
+                &self.input[start..]
+            } else {
+                ""
+            };
+            popup.set_filter(filter);
+        }
+    }
+
+    fn handle_mention_tab(&mut self) {
+        let selection = self
+            .mention_popup
+            .as_ref()
+            .and_then(|popup| {
+                popup
+                    .selected_entry()
+                    .cloned()
+                    .map(|entry| (popup.trigger_at, entry))
+            });
+        let Some((trigger_at, entry)) = selection else {
+            self.mention_popup = None;
+            return;
+        };
+
+        if entry.is_dir && self.mention_text_after(trigger_at) != entry.rel_path {
+            self.replace_mention_text(trigger_at, &entry.rel_path);
+            self.refresh_mention_filter();
+            return;
+        }
+
+        self.commit_mention_selection();
+    }
+
+    fn mention_text_after(&self, trigger_at: usize) -> &str {
+        let start = trigger_at + 1;
+        if start < self.input.len() {
+            &self.input[start..]
+        } else {
+            ""
+        }
+    }
+
+    fn replace_mention_text(&mut self, trigger_at: usize, replacement: &str) {
+        debug_assert!(self.input.is_char_boundary(trigger_at));
+        self.input.truncate(trigger_at);
+        self.input.push('@');
+        self.input.push_str(replacement);
+    }
+
+    fn commit_mention_selection(&mut self) {
+        let popup = self.mention_popup.take();
+        if let Some(popup) = popup
+            && let Some(entry) = popup.selected_entry()
+        {
+            let trigger_at = popup.trigger_at;
+            let committed_path = if entry.is_dir {
+                format!("{}/", entry.rel_path)
+            } else {
+                entry.rel_path.clone()
+            };
+            self.replace_mention_text(trigger_at, &committed_path);
+            self.input.push(' ');
+        }
     }
 
     fn scroll_conversation_up(&mut self, lines: usize) {
@@ -221,7 +359,8 @@ mod tests {
     use xoxo_core::llm::LlmFinishReason;
     use xoxo_core::storage::Storage;
 
-    use crate::app::{HistoryEntry, HistoryPayload};
+    use crate::app::{HistoryEntry, HistoryPayload, MentionPopup};
+    use crate::app::mention::MentionEntry;
 
     fn press_enter(app: &mut App) {
         app.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)))
@@ -234,6 +373,11 @@ mod tests {
             KeyModifiers::NONE,
         )))
         .expect("char event");
+    }
+
+    fn press_key(app: &mut App, code: KeyCode) {
+        app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+            .expect("key event");
     }
 
     fn sample_chat(chat_id: Uuid, model_name: &str, message: &str) -> Chat {
@@ -382,11 +526,6 @@ mod tests {
         assert!(!app.running);
     }
 
-    fn press_key(app: &mut App, code: KeyCode) {
-        app.handle_event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)))
-            .expect("key event");
-    }
-
     #[test]
     fn help_command_opens_modal_on_enter() {
         let mut app = App::new(None);
@@ -476,5 +615,151 @@ mod tests {
             storage.last_used_chat_id().expect("last used chat id"),
             Some(chat_id)
         );
+    }
+
+    #[test]
+    fn at_sign_opens_mention_popup() {
+        let mut app = App::new(None);
+        press_char(&mut app, '@');
+        let popup = app.mention_popup.as_ref().expect("popup should be open");
+        assert_eq!(popup.trigger_at, 0);
+    }
+
+    #[test]
+    fn at_sign_after_whitespace_opens_mention_popup() {
+        let mut app = App::new(None);
+        app.input = "check ".to_string();
+
+        press_char(&mut app, '@');
+
+        let popup = app.mention_popup.as_ref().expect("popup should be open");
+        assert_eq!(popup.trigger_at, "check ".len());
+    }
+
+    #[test]
+    fn embedded_at_sign_does_not_open_mention_popup() {
+        let mut app = App::new(None);
+        app.input = "email".to_string();
+
+        press_char(&mut app, '@');
+
+        assert_eq!(app.input, "email@");
+        assert!(app.mention_popup.is_none());
+    }
+
+    #[test]
+    fn space_after_at_closes_popup() {
+        let mut app = App::new(None);
+        press_char(&mut app, '@');
+        assert!(app.mention_popup.is_some());
+        press_char(&mut app, ' ');
+        assert!(app.mention_popup.is_none());
+        assert!(app.input.ends_with("@ "));
+    }
+
+    #[test]
+    fn backspace_past_at_closes_popup() {
+        let mut app = App::new(None);
+        press_char(&mut app, '@');
+        press_char(&mut app, 'x');
+        assert!(app.mention_popup.is_some());
+        press_key(&mut app, KeyCode::Backspace);
+        press_key(&mut app, KeyCode::Backspace);
+        assert!(app.mention_popup.is_none());
+    }
+
+    #[test]
+    fn tab_commits_selection() {
+        let mut app = App::new(None);
+        app.input = "@".to_string();
+        let entries = vec![MentionEntry {
+            rel_path: "src/main.rs".to_string(),
+            is_dir: false,
+        }];
+        app.mention_popup = Some(MentionPopup::with_entries(0, entries));
+        press_key(&mut app, KeyCode::Tab);
+        assert_eq!(app.input, "@src/main.rs ");
+        assert!(app.mention_popup.is_none());
+    }
+
+    #[test]
+    fn first_tab_on_directory_updates_mention_text() {
+        let mut app = App::new(None);
+        app.input = "inspect @s".to_string();
+        let entries = vec![
+            MentionEntry {
+                rel_path: "src".to_string(),
+                is_dir: true,
+            },
+            MentionEntry {
+                rel_path: "src/main.rs".to_string(),
+                is_dir: false,
+            },
+        ];
+        app.mention_popup = Some(MentionPopup::with_entries("inspect ".len(), entries));
+
+        press_key(&mut app, KeyCode::Tab);
+
+        assert_eq!(app.input, "inspect @src");
+        let popup = app.mention_popup.as_ref().expect("popup should stay open");
+        assert_eq!(popup.filter(), "src");
+    }
+
+    #[test]
+    fn second_tab_on_matching_directory_commits_selection() {
+        let mut app = App::new(None);
+        app.input = "@src".to_string();
+        let entries = vec![
+            MentionEntry {
+                rel_path: "src".to_string(),
+                is_dir: true,
+            },
+            MentionEntry {
+                rel_path: "src/main.rs".to_string(),
+                is_dir: false,
+            },
+        ];
+        let mut popup = MentionPopup::with_entries(0, entries);
+        popup.set_filter("src");
+        app.mention_popup = Some(popup);
+
+        press_key(&mut app, KeyCode::Tab);
+
+        assert_eq!(app.input, "@src/ ");
+        assert!(app.mention_popup.is_none());
+    }
+
+    #[test]
+    fn esc_closes_popup_leaves_input() {
+        let mut app = App::new(None);
+        press_char(&mut app, '@');
+        press_char(&mut app, 'x');
+        press_key(&mut app, KeyCode::Esc);
+        assert_eq!(app.input, "@x");
+        assert!(app.mention_popup.is_none());
+    }
+
+    #[test]
+    fn enter_while_popup_open_commits_not_submits() {
+        let mut app = App::new(None);
+        app.input = "@".to_string();
+        let entries = vec![MentionEntry {
+            rel_path: "Cargo.toml".to_string(),
+            is_dir: false,
+        }];
+        app.mention_popup = Some(MentionPopup::with_entries(0, entries));
+        press_enter(&mut app);
+        assert!(app.pending_submission.is_none());
+        assert_eq!(app.input, "@Cargo.toml ");
+        assert!(app.mention_popup.is_none());
+    }
+
+    #[test]
+    fn typing_filter_updates_popup() {
+        let mut app = App::new(None);
+        press_char(&mut app, '@');
+        press_char(&mut app, 'a');
+        let popup = app.mention_popup.as_ref().expect("popup should be open");
+        assert_eq!(popup.filter(), "a");
     }
 }

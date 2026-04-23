@@ -1,6 +1,7 @@
 //! Application state.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -13,11 +14,13 @@ use xoxo_core::storage::Storage;
 
 mod events;
 mod history;
+mod mention;
 mod modal;
 mod stats;
 mod sync;
 
 pub use history::{HistoryEntry, HistoryPayload};
+pub use mention::{MentionPopup};
 pub use modal::{Modal, ModalContent, ModalMenu, ModalMenuItem};
 
 use history::history_from_chat;
@@ -62,6 +65,11 @@ pub struct App {
     pub conversation_scroll_from_bottom: usize,
     /// Current modal overlay (if any).
     pub modal: Option<Modal>,
+    /// Current `@`-mention popup state (if any).
+    pub mention_popup: Option<MentionPopup>,
+    /// Workspace root captured at startup; used for the `@`-mention picker and
+    /// path display in the header/status bar.
+    pub workspace_root: PathBuf,
     /// Counter for consecutive Ctrl+C presses.
     pub ctrl_c_count: u8,
     /// Start time used for lightweight UI animations.
@@ -150,6 +158,8 @@ impl App {
             in_flight_thinking: HashMap::new(),
             conversation_scroll_from_bottom: 0,
             modal: None,
+            mention_popup: None,
+            workspace_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             ctrl_c_count: 0,
             started_at: Instant::now(),
             turn_in_progress: false,

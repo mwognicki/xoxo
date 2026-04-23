@@ -9,65 +9,71 @@ It draws inspiration from Mistral Le Vibe, OpenAI Codex, and OpenCode, with a ha
 ## Status
 
 > **Early days.** The repository is at version `0.0.1` and the design is still consolidating. The core runtime (bus, agents/subagents, LLM facade, persistence, coding tools) is in place and partially wired, but the end-to-end experience is a work in progress — rough edges and missing pieces are expected.
->
-> Treat this README as a description of the system's direction and current shape, not a polished feature list.
 
-## What it is
+## Features
 
-`xoxo` is a single binary with two faces:
+### Two assistants, one binary
 
-- **`nerd`** — the coding assistant. Always compiled in. Aimed at working inside a repository: reading code, editing files, running commands, running AST-backed code-intelligence queries, and helping you think through changes.
-- **`concierge`** — a broader personal assistant. Opt-in at build time. Aimed at tasks outside of pure coding. Currently a scaffolded crate; capabilities are still being filled in.
+- **`nerd`** — always-on coding assistant. Reads code, edits files, runs commands, answers repo-scoped questions.
+- **`concierge`** — opt-in broader personal assistant. Compiled in only when you ask for it.
+- **Headless daemon (`xoxo daemon`)** or **embedded TUI (`xoxo tui`)** — same engine, same in-process bus, same persisted state.
+- **Dev utilities (`xoxo dev …`)** — dump a raw persisted chat snapshot or purge the local store.
 
-Under the hood, both share the same core: one daemon, one in-process message bus, one LLM facade, one tool registry, one persistence layer. You choose which capabilities are compiled in; you are never forced to carry what you don't want.
+### Agents and subagents as a tree
 
-### Agents and subagents
+- **One chat = one agent.** Agent identity is the chat's `Uuid`; no parallel ID space to maintain.
+- **Root agents orchestrate; specialised subagents do bounded sub-tasks.** A root can call `spawn_subagent` with an explicit toolset, an optional model override, and a short brief.
+- **Structured handoff, not streaming.** A subagent runs its own loop to completion and returns a `SubagentHandoff` (completed / failed / cancelled + the full transcript + a summary). The parent LLM sees exactly one tool-result turn.
+- **Depth capped by construction.** Children only receive `spawn_subagent` while the depth budget allows it — leaves literally cannot ask.
+- **Full observability.** Subagent activity streams on the same bus as the root's, stamped with a `ChatPath` so any client can render the tree.
+- **Every chat persisted in full**, subagents included — sessions resume from disk; a tree can be reconstructed from any node.
 
-An "agent" in `xoxo` is one isolated chat with its own system prompt and toolset. The runtime lets agents form a tree: a root agent can spawn specialised **subagents** for bounded sub-tasks through a `spawn_subagent` tool, collect a structured handoff, and fold the result back into its own transcript. Depth is capped, subagent toolsets are explicit (not inherited), and every subagent's activity is observable on the same bus as the root. See `docs/adr/0001-agents-and-subagents.md` for the full design.
+### Coding tools that aren't just text search
 
-## How you'll use it
+- **AST-backed code intelligence** via Tree-sitter (40+ grammars: Rust, TypeScript/JavaScript, Python, Go, Java, C/C++, C#, Ruby, PHP, Swift, Kotlin, Scala, Haskell, Lua, Dart, Elixir, Erlang, Zig, Julia, Solidity, GraphQL, Proto, Nix, and more).
+- **Deterministic code queries**: `find_symbol`, `find_references`, `find_tests_for_symbol`, `inspect_code_structure`.
+- **Surgical edits**: `patch_symbol`, `rename_symbol`, `ensure_import` — targeted changes that don't disturb surrounding code.
+- **Text-level fallbacks** for unsupported languages or broad work: `read_file`, `write_file`, `patch_file`, `find_files`, `find_patterns`.
+- **Process and environment tools**: `exec`, `eval_script`, `process`, `http` — for running commands, probing services, and working outside the file system.
 
-Two ways to run it, sharing the same engine:
+### LLM backends behind a single facade
 
-- **`xoxo daemon`** — runs the daemon headless. Useful for scripting, integrations, or attaching a UI of your own.
-- **`xoxo tui`** — a terminal UI (ratatui) that embeds the daemon in the same process. This is the everyday interactive mode.
+- **Provider-neutral request/response shape** (`LlmCompletionRequest` / `LlmCompletionResponse`, `LlmFinishReason`, `LlmToolDefinition`, `LlmToolCall`, `LlmToolChoice`) — the rest of the workspace never touches vendor SDK types.
+- **Dual backend crates under the hood** (`rig-core` + `ai-lib`). A capability-driven selector picks the right one per provider automatically.
+- **Large built-in provider catalogue**: OpenAI, Anthropic, OpenRouter, Gemini, Mistral, xAI, DeepSeek, Ollama, Groq, Together, Perplexity, Moonshot, Cohere, Azure, Qwen, HuggingFace, Replicate, z.ai, Minimax, and more.
+- **User-defined providers**: declare any OpenAI- or Anthropic-compatible endpoint in config; it slots into the same facade.
+- **Local-friendly.** Ollama, llama.cpp, and arbitrary proxies work out of the box via OpenAI-compatible routes.
 
-Both talk to the same internal bus, so a future remote/out-of-process UI is a natural extension rather than a rewrite.
+### Strict compile-time opt-in
 
-There is also a `xoxo dev` subcommand group with small developer utilities, e.g. dumping a raw persisted chat snapshot from the local sled store or purging the store entirely.
+- **Feature flags gate entire subsystems.** `tui`, `concierge`, `log-broadcast`, and per-backend features compose independently.
+- **The feature matrix is an invariant.** `--no-default-features`, each subset, and `--all-features` all compile cleanly. No hidden coupling.
+- **Your binary contains only what you asked for.** No pulled-in ratatui/crossterm without `tui`, no concierge surface without `concierge`, no backend transport you didn't enable.
 
-## LLM backends
+### In-process bus as the only integration seam
 
-`xoxo` is designed to work with multiple LLM providers behind a single interface. Internally, a provider registry (populated via `inventory`) catalogues built-in providers (OpenAI, Anthropic, OpenRouter, Gemini, Mistral, xAI, DeepSeek, Ollama, Groq, Together, Perplexity, Moonshot, and more) and routes each to one of two backend crates (`rig-core` or `ai-lib`) depending on capabilities. User-defined providers can also be declared in config with either OpenAI- or Anthropic-compatible wire protocols.
+- **Everything is messages.** Commands (clients → daemon), events (daemon → many clients), logs (opt-in). No direct function calls between UI, LLM adapters, agents, and persistence for runtime coordination.
+- **`ChatPath` on every event** carries full lineage — root, parent, current, depth — so observers group and filter by tree cheaply.
+- **Serde-ready payloads with no channel handles or closures** — the same enums can move over a future out-of-process transport without reshape.
+- **TUI is just another bus client.** A remote/out-of-process UI is a natural extension, not a rewrite.
 
-Concretely:
+### Local, inspectable persistence
 
-- **OpenAI-compatible** endpoints (OpenAI itself, OpenRouter, Ollama, llama.cpp, local proxies, any OpenAI-compatible gateway) are usable out of the box.
-- **Anthropic** and other mainstream hosted providers are reachable through the same facade.
-- `openai` is the default Cargo feature on `xoxo-core` today; additional backends will be promoted to independent features as they stabilise.
+- **Everything under `~/.xoxo/`**: `config.toml` (commented example generated on first run) and `data/` (sled database for chats + metadata).
+- **No cloud dependency.** Chats, subagent transcripts, and last-used chat state live on your disk.
+- **Configurable per-provider credentials** plus a current-provider / current-model selector for new root chats.
 
-All backend-specific code (HTTP, auth, streaming decode) is isolated behind a single facade. The rest of the workspace speaks a provider-neutral `LlmCompletionRequest` / `LlmCompletionResponse` shape.
+## What makes xoxo unique
 
-## Code intelligence
+A handful of deliberate choices set xoxo apart from the many terminal coding assistants in this space:
 
-`nerd` does not rely only on text search and full-file reads. It ships deterministic, AST-backed code-intelligence tools (Tree-sitter grammars for 40+ languages) for things like:
-
-- Finding symbol definitions and references
-- Inspecting a file's top-level structure
-- Locating tests relevant to a symbol
-- Patching or renaming a specific symbol in place
-- Ensuring an import exists without disturbing the rest of the file
-
-These sit alongside the usual text-level tools (`read_file`, `write_file`, `patch_file`, `find_files`, `find_patterns`, `exec`, `eval_script`, `process`, `http`, …). The rationale and layering are described in `docs/adr/0002-deterministic-code-intelligence-for-nerd.md`.
-
-## Storage
-
-Persistent state lives under `~/.xoxo/`:
-
-- `~/.xoxo/config.toml` — user configuration (see below). Created with a commented example on first run.
-- `~/.xoxo/data/` — a local [sled](https://github.com/spacejam/sled) database for chat transcripts and small app-state entries (e.g. the last-used chat id).
-
-Chats are persisted in full, including subagent transcripts, so a session can be resumed from disk and a tree can be reconstructed from any node.
+- **Subagents are specialists, not copies.** Most assistants either run a single flat chat or stream a sub-loop inline. xoxo treats spawning as a tool call, forces the parent to name the child's toolset explicitly, and hands back a structured summary — so the parent's context stays focused and subagent output can't flood the main transcript.
+- **Tree-shaped chats with one identifier.** `Chat.id` *is* the agent id. `ChatPath` carries the lineage. One flat registry, one canonical id, no `AgentId` / `ConversationId` / `CallStack` triple-bookkeeping.
+- **Deterministic code intelligence first, embeddings later.** `nerd` answers structural questions ("where is this defined?", "what does this file export?", "rename this symbol") through Tree-sitter ASTs, not fuzzy search. Vector search, when added, will be for candidate discovery only — the agent still verifies against concrete AST facts before editing.
+- **Two-backend LLM strategy.** `rig-core` and `ai-lib` each cover a different slice of the provider landscape; xoxo keeps both behind one facade and routes per provider, so you get broad coverage without vendor-specific code leaking into the rest of the workspace.
+- **In-process bus, remotable by design.** The TUI embeds the daemon today, but every message that flows between subsystems is already `serde`-clean and path-stamped — there's no in-memory-only shortcut to rip out when a future remote UI shows up.
+- **Opt-in everything.** Concierge, TUI, broadcast logging, individual backends — all behind features. The default build is a small, coding-focused binary. You never pay for what you don't use.
+- **Your machine, your data.** All state is local (sled under `~/.xoxo/data/`), all config is local (`~/.xoxo/config.toml`), and the transcript format is the record — no separate "handoff-only" or "memory-only" stores to drift out of sync.
 
 ## Installing
 
@@ -88,18 +94,16 @@ The resulting binary is `xoxo`. Requires a recent Rust toolchain (`rust-version 
 
 ## Configuration
 
-Configuration lives in `~/.xoxo/config.toml` and is written with a fully-commented example on first launch. The shape is still evolving, but the main sections today are:
+Configuration lives in `~/.xoxo/config.toml` and is written with a fully-commented example on first launch. The main sections today:
 
 - `[code_quality]` — soft rules applied by local tooling (e.g. `max_lines_in_file`).
 - `[current_provider]` / `[current_model]` — which provider/model to use for newly created root chats.
-- `[[providers]]` — credentials and base URLs for built-in providers, plus user-defined `kind = "other"` entries that declare OpenAI- or Anthropic-compatible wire protocols.
+- `[[providers]]` — credentials and base URLs for built-in providers, plus user-defined `kind = "other"` entries with OpenAI- or Anthropic-compatible wire protocols.
 - `[ui]` — TUI-specific preferences.
 
 For a quick start without writing config, setting `OPENROUTER_API_KEY` in the environment is enough to get the default provider selection working.
 
 ## Workspace layout
-
-Cargo workspace, one binary, a small set of libraries, and a couple of agent crates:
 
 ```
 crates/
@@ -114,6 +118,12 @@ crates/
     nerd/          # coding-assistant toolkit — always on
     concierge/     # broader personal-assistant toolkit — opt-in
 ```
+
+Design notes worth reading before touching the internals:
+
+- `docs/adr/0001-agents-and-subagents.md` — agent/subagent model, identity, spawning, handoff.
+- `docs/adr/0002-deterministic-code-intelligence-for-nerd.md` — why AST-first, where embeddings fit.
+- `crates/lib/xoxo-core/docs/bus.md` — bus message reference.
 
 ## License
 

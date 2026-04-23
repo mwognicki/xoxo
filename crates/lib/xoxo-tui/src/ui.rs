@@ -1,12 +1,10 @@
 //! UI layout and rendering.
 
-use std::env;
-
 use ansi_to_tui::IntoText as _;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position};
-use ratatui::style::{Color, Style};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, TitlePosition, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, TitlePosition, Wrap};
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
@@ -74,15 +72,13 @@ fn draw_main(frame: &mut Frame, app: &App) {
 
     render_conversation(frame, app, chunks[0], conversation);
     render_input(frame, app, chunks[1], input_prompt);
+    render_mention_popup(frame, app, chunks[1]);
     render_status_bar(frame, app, status_area);
     render_modal(frame, app);
 }
 
 fn render_header_lines(app: &App) -> Vec<Line<'static>> {
-    let current_dir = env::current_dir()
-        .ok()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "<unknown cwd>".to_string());
+    let current_dir = app.workspace_root.display().to_string();
     let header_art = HEADER_ART
         .replace("{VERSION}", env!("CARGO_PKG_VERSION"))
         .replace("{PWD}", &current_dir)
@@ -182,6 +178,69 @@ fn render_input(frame: &mut Frame, app: &App, area: ratatui::layout::Rect, input
         area.x + cursor_x,
         area.y + 1 + cursor_visible_line,
     ));
+}
+
+fn render_mention_popup(frame: &mut Frame, app: &App, input_area: Rect) {
+    let Some(popup) = &app.mention_popup else {
+        return;
+    };
+
+    let entries = popup.visible_entries().collect::<Vec<_>>();
+    let row_count = entries.len().max(1) as u16;
+    let popup_height = row_count.saturating_add(2).min(input_area.y);
+    if popup_height < 3 {
+        return;
+    }
+
+    let content_width = entries
+        .iter()
+        .map(|entry| entry.rel_path.width() + if entry.is_dir { 1 } else { 0 })
+        .max()
+        .unwrap_or("No matching files".width());
+    let max_width = input_area.width.max(1);
+    let min_width = 24.min(max_width);
+    let popup_width = (content_width as u16)
+        .saturating_add(4)
+        .clamp(min_width, max_width);
+    let popup_area = Rect {
+        x: input_area.x,
+        y: input_area.y.saturating_sub(popup_height),
+        width: popup_width,
+        height: popup_height,
+    };
+
+    let selected_index = popup.selected_index();
+    let lines = if entries.is_empty() {
+        vec![Line::from(Span::styled(
+            "No matching files",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else {
+        entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let suffix = if entry.is_dir { "/" } else { "" };
+                let style = if index == selected_index {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                Line::from(Span::styled(format!("{}{}", entry.rel_path, suffix), style))
+            })
+            .collect()
+    };
+
+    let popup_paragraph = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::DarkGray)),
+    );
+    frame.render_widget(Clear, popup_area);
+    frame.render_widget(popup_paragraph, popup_area);
 }
 
 fn input_box_height(app: &App, input_prompt: &str, area: ratatui::layout::Rect) -> u16 {
@@ -290,10 +349,7 @@ fn last_word_boundary(line: &str) -> Option<(usize, usize)> {
 }
 
 fn render_status_bar(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
-    let current_dir = env::current_dir()
-        .ok()
-        .map(|path| path.display().to_string())
-        .unwrap_or_else(|| "<unknown cwd>".to_string());
+    let current_dir = app.workspace_root.display().to_string();
 
     let left_text = format!("{} • {}", current_dir, app.current_model_name);
     let selection_prefix = if app.mouse_capture_enabled {
