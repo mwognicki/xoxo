@@ -3,22 +3,24 @@ resolver = "3"
 members = [
     "crates/bin/xoxo",
     "crates/agents/agentix",
-    "crates/lib/xoxo-core",
-    "crates/lib/xoxo-tui",
+    "crates/agents/nerd-ast",
     "crates/agents/nerd",
     "crates/agents/concierge",
+    "crates/lib/xoxo-core",
+    "crates/lib/xoxo-tui",
 ]
 
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
 rust-version = "1.94"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 publish = false
 
 [workspace.dependencies]
 # Internal
 agentix = { path = "crates/agents/agentix" }
+nerd-ast = { path = "crates/agents/nerd-ast" }
 xoxo-core = { path = "crates/lib/xoxo-core" }
 xoxo-tui = { path = "crates/lib/xoxo-tui" }
 nerd = { path = "crates/agents/nerd" }

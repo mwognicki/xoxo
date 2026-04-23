@@ -295,4 +295,191 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn finds_symbols_in_third_batch_tree_sitter_grammars() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("Main.java"),
+            "class App { void boot() {} }\n",
+        )
+        .unwrap();
+        fs::write(temp.path().join("Main.hs"), "boot x = x + 1\n").unwrap();
+        fs::write(temp.path().join("Main.kt"), "fun boot(): Int { return 1 }\n").unwrap();
+        fs::write(temp.path().join("model.m"), "function y = boot(x)\ny = x;\nend\n")
+            .unwrap();
+        fs::write(temp.path().join("analysis.R"), "boot <- function(x) { x }\n").unwrap();
+        fs::write(temp.path().join("Main.scala"), "def boot = 1\n").unwrap();
+        fs::write(temp.path().join("server.erl"), "boot() -> ok.\n").unwrap();
+
+        let result = find_symbol(FindSymbolOptions {
+            name: "boot".to_string(),
+            language: None,
+            root: Some(temp.path().to_path_buf()),
+        })
+        .unwrap();
+
+        let hits = result
+            .hits
+            .iter()
+            .map(|hit| (hit.file_path.as_str(), hit.language))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            hits,
+            vec![
+                ("Main.hs", CodeLanguage::Haskell),
+                ("Main.java", CodeLanguage::Java),
+                ("Main.kt", CodeLanguage::Kotlin),
+                ("Main.scala", CodeLanguage::Scala),
+                ("analysis.R", CodeLanguage::R),
+                ("model.m", CodeLanguage::Matlab),
+                ("server.erl", CodeLanguage::Erlang),
+            ]
+        );
+    }
+
+    #[test]
+    fn finds_symbols_in_fourth_batch_tree_sitter_grammars() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("Main.groovy"),
+            "class App { String boot() { 'hi' } }\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("solver.f90"),
+            "function boot(x) result(y)\ninteger :: x, y\ny = x\nend function boot\n",
+        )
+        .unwrap();
+        fs::write(temp.path().join("app.ex"), "defmodule App do\n  def boot(x), do: x\nend\n")
+            .unwrap();
+        fs::write(temp.path().join("main.dart"), "boot() => 1;\n").unwrap();
+        fs::write(temp.path().join("flake.nix"), "{ boot = x: x; }\n").unwrap();
+        fs::write(temp.path().join("script.ps1"), "function boot { 1 }\n").unwrap();
+        fs::write(temp.path().join("main.zig"), "pub fn boot() void {}\n").unwrap();
+
+        let result = find_symbol(FindSymbolOptions {
+            name: "boot".to_string(),
+            language: None,
+            root: Some(temp.path().to_path_buf()),
+        })
+        .unwrap();
+
+        let hits = result
+            .hits
+            .iter()
+            .map(|hit| (hit.file_path.as_str(), hit.language))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            hits,
+            vec![
+                ("Main.groovy", CodeLanguage::Groovy),
+                ("app.ex", CodeLanguage::Elixir),
+                ("flake.nix", CodeLanguage::Nix),
+                ("main.dart", CodeLanguage::Dart),
+                ("main.zig", CodeLanguage::Zig),
+                ("script.ps1", CodeLanguage::PowerShell),
+                ("solver.f90", CodeLanguage::Fortran),
+            ]
+        );
+    }
+
+    #[test]
+    fn finds_symbols_in_final_tree_sitter_grammar_batch() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("main.jl"),
+            "module App\nfunction boot(x)\n  x\nend\nend\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("main.pas"),
+            "program Boot;\nbegin\nend.\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("main.mm"),
+            "@interface Boot\n@end\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("Main.vb"),
+            "Module Boot\nEnd Module\n",
+        )
+        .unwrap();
+
+        let result = find_symbol(FindSymbolOptions {
+            name: "Boot".to_string(),
+            language: None,
+            root: Some(temp.path().to_path_buf()),
+        })
+        .unwrap();
+
+        let hits = result
+            .hits
+            .iter()
+            .map(|hit| (hit.file_path.as_str(), hit.language))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            hits,
+            vec![
+                ("Main.vb", CodeLanguage::VbDotNet),
+                ("main.mm", CodeLanguage::ObjectiveC),
+                ("main.pas", CodeLanguage::Pascal),
+            ]
+        );
+
+        let julia = find_symbol(FindSymbolOptions {
+            name: "boot".to_string(),
+            language: Some(CodeLanguage::Julia),
+            root: Some(temp.path().to_path_buf()),
+        })
+        .unwrap();
+        assert_eq!(julia.hit_count, 1);
+        assert_eq!(julia.hits[0].file_path, "main.jl");
+    }
+
+    #[test]
+    fn finds_symbols_in_last_tree_sitter_grammar_batch() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("vault.sol"),
+            "contract Vault {\nfunction boot() public {}\n}\n",
+        )
+        .unwrap();
+        fs::write(temp.path().join("schema.graphql"), "query boot { viewer { id } }\n")
+            .unwrap();
+        fs::write(temp.path().join("boot.asm"), "boot:\n  retq\n").unwrap();
+        fs::write(
+            temp.path().join("api.proto"),
+            "syntax = \"proto3\";\nservice Api { rpc boot (Req) returns (Req); }\nmessage Req {}\n",
+        )
+        .unwrap();
+
+        let result = find_symbol(FindSymbolOptions {
+            name: "boot".to_string(),
+            language: None,
+            root: Some(temp.path().to_path_buf()),
+        })
+        .unwrap();
+
+        let hits = result
+            .hits
+            .iter()
+            .map(|hit| (hit.file_path.as_str(), hit.language))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            hits,
+            vec![
+                ("api.proto", CodeLanguage::Proto),
+                ("boot.asm", CodeLanguage::Assembly),
+                ("schema.graphql", CodeLanguage::Graphql),
+                ("vault.sol", CodeLanguage::Solidity),
+            ]
+        );
+    }
 }

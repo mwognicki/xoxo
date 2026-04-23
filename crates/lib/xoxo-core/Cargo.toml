@@ -26,7 +26,6 @@ futures = { workspace = true }
 ai-lib = "0.4"
 chrono = { version = "0.4.44", default-features = false, features = ["clock"] }
 toml = "1"
-directories = "6"
 
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"], optional = true }
 eventsource-stream = { version = "0.2", optional = true }

@@ -34,7 +34,7 @@ impl Tool for FindSymbolTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "find_symbol".to_string(),
-            description: "Find exact symbol definitions under a root using deterministic AST parsers. Supports Rust, Python, Go, JavaScript, TypeScript, Ruby, PHP, C, C++, Bash, C#, Lua, Perl, Swift, JSON, TOML, and YAML initially.".to_string(),
+            description: "Find exact symbol definitions under a root using deterministic AST parsers across supported source languages.".to_string(),
             parameters: json!({
                 "type": "object",
                 "required": ["name"],
@@ -46,7 +46,7 @@ impl Tool for FindSymbolTool {
                     },
                     "language": {
                         "type": "string",
-                        "enum": ["rust", "python", "go", "javascript", "typescript", "tsx", "ruby", "php", "c", "cpp", "bash", "csharp", "lua", "perl", "swift", "json", "toml", "yaml"],
+                        "enum": ["rust", "python", "go", "javascript", "typescript", "tsx", "ruby", "php", "c", "cpp", "bash", "csharp", "lua", "perl", "swift", "java", "haskell", "kotlin", "matlab", "r", "scala", "erlang", "groovy", "fortran", "elixir", "dart", "nix", "powershell", "zig", "julia", "pascal", "objc", "vb", "json", "toml", "yaml", "solidity", "graphql", "asm", "proto"],
                         "description": "Optional language filter. When omitted, all supported AST languages are searched."
                     },
                     "root": {
