@@ -7,7 +7,7 @@ use crate::syntax_highlighter::highlight_syntax;
 use crate::app::{App, CachedConversation, HistoryEntry, HistoryPayload};
 use crate::tool_format;
 use crate::ui::markdown::render_markdown_message;
-use crate::ui::tool_lines::tool_outcome;
+use crate::ui::tool_lines::{build_tool_outcome_lookup, tool_outcome, ToolOutcomeLookup};
 use crate::ui::{prefixed_plain_line, prefixed_styled_line};
 
 pub(super) struct ConversationLines {
@@ -23,8 +23,9 @@ pub(super) struct ConversationLines {
 pub(super) fn build_conversation_lines(
     app: &App,
     header_lines: Vec<Line<'static>>,
+    viewport_width: u16,
 ) -> ConversationLines {
-    let key = app.conversation_cache_key();
+    let key = app.conversation_cache_key(viewport_width);
     if let Some(cached) = app.cached_conversation.borrow().as_ref()
         && cached.key == key
     {
@@ -34,7 +35,7 @@ pub(super) fn build_conversation_lines(
         };
     }
 
-    let built = build_conversation_lines_uncached(app, header_lines);
+    let built = build_conversation_lines_uncached(app, header_lines, viewport_width);
 
     *app.cached_conversation.borrow_mut() = Some(CachedConversation {
         key,
@@ -48,7 +49,9 @@ pub(super) fn build_conversation_lines(
 fn build_conversation_lines_uncached(
     app: &App,
     header_lines: Vec<Line<'static>>,
+    viewport_width: u16,
 ) -> ConversationLines {
+    let tool_outcomes = build_tool_outcome_lookup(app);
     let mut lines = header_lines;
 
     lines.push(Line::from(""));
@@ -67,7 +70,7 @@ fn build_conversation_lines_uncached(
                 lines.extend(render_markdown_message(&message.content, highlight_syntax));
             }
         } else {
-            lines.extend(render_plain_payload(app, entry));
+            lines.extend(render_plain_payload(app, &tool_outcomes, entry, viewport_width));
         }
 
         if let HistoryPayload::Bus(BusPayload::Turn(TurnEvent::Finished { .. })) = &entry.payload {
@@ -156,19 +159,23 @@ fn should_prepend_spacing(previous_entry: Option<&HistoryEntry>, entry: &History
     previous_entry.is_some() && !is_tool_result_entry(entry)
 }
 
-fn has_matching_tool_start(app: &App, tool_call_id: &ChatToolCallId) -> bool {
-    app.history.iter().any(|entry| {
-        matches!(
-            &entry.payload,
-            HistoryPayload::Bus(BusPayload::ToolCall(ToolCallEvent::Started(started)))
-                if &started.tool_call_id == tool_call_id
-        )
-    })
+fn has_matching_tool_start(
+    tool_outcomes: &ToolOutcomeLookup<'_>,
+    tool_call_id: &ChatToolCallId,
+) -> bool {
+    tool_outcomes.contains_key(tool_call_id)
 }
 
-fn render_tool_outcome_lines(app: &App, started: &ToolCallStarted) -> Vec<Line<'static>> {
-    match tool_outcome(app, started) {
-        Some(ToolCallEvent::Completed(completed)) => tool_format::format_completed(app, completed),
+fn render_tool_outcome_lines(
+    app: &App,
+    tool_outcomes: &ToolOutcomeLookup<'_>,
+    started: &ToolCallStarted,
+    viewport_width: u16,
+) -> Vec<Line<'static>> {
+    match tool_outcome(tool_outcomes, started) {
+        Some(ToolCallEvent::Completed(completed)) => {
+            tool_format::format_completed(app, completed, viewport_width)
+        }
         Some(ToolCallEvent::Failed(failed)) => tool_format::format_failed(app, failed),
         Some(ToolCallEvent::Started(_)) | None => Vec::new(),
     }
@@ -189,7 +196,12 @@ fn render_thinking_lines(content: &str) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn render_plain_payload(app: &App, entry: &HistoryEntry) -> Vec<Line<'static>> {
+fn render_plain_payload(
+    app: &App,
+    tool_outcomes: &ToolOutcomeLookup<'_>,
+    entry: &HistoryEntry,
+    viewport_width: u16,
+) -> Vec<Line<'static>> {
     match &entry.payload {
         HistoryPayload::Thinking(content) => render_thinking_lines(content),
         HistoryPayload::Bus(BusPayload::Message(message)) => message
@@ -205,19 +217,24 @@ fn render_plain_payload(app: &App, entry: &HistoryEntry) -> Vec<Line<'static>> {
             })
             .collect(),
         HistoryPayload::Bus(BusPayload::ToolCall(ToolCallEvent::Started(started))) => {
-            let mut lines = tool_format::format_started(app, started);
-            lines.extend(render_tool_outcome_lines(app, started));
+            let mut lines = tool_format::format_started(app, tool_outcomes, started);
+            lines.extend(render_tool_outcome_lines(
+                app,
+                tool_outcomes,
+                started,
+                viewport_width,
+            ));
             lines
         }
         HistoryPayload::Bus(BusPayload::ToolCall(ToolCallEvent::Completed(completed))) => {
-            if has_matching_tool_start(app, &completed.tool_call_id) {
+            if has_matching_tool_start(tool_outcomes, &completed.tool_call_id) {
                 Vec::new()
             } else {
-                tool_format::format_completed(app, completed)
+                tool_format::format_completed(app, completed, viewport_width)
             }
         }
         HistoryPayload::Bus(BusPayload::ToolCall(ToolCallEvent::Failed(failed))) => {
-            if has_matching_tool_start(app, &failed.tool_call_id) {
+            if has_matching_tool_start(tool_outcomes, &failed.tool_call_id) {
                 Vec::new()
             } else {
                 tool_format::format_failed(app, failed)
@@ -329,13 +346,16 @@ mod tests {
                 ))),
             },
         ]);
+        let tool_outcomes = build_tool_outcome_lookup(&app);
 
         let started_lines = render_plain_payload(
             &app,
+            &tool_outcomes,
             &HistoryEntry {
                 chat_id: Uuid::new_v4(),
                 payload: HistoryPayload::Bus(BusPayload::ToolCall(ToolCallEvent::Started(started))),
             },
+            100,
         );
 
         assert_eq!(started_lines.len(), 2);
@@ -368,6 +388,7 @@ mod tests {
                 ))),
             },
         ]);
+        let tool_outcomes = build_tool_outcome_lookup(&app);
         let completed_entry = HistoryEntry {
             chat_id: Uuid::new_v4(),
             payload: HistoryPayload::Bus(BusPayload::ToolCall(ToolCallEvent::Completed(
@@ -379,7 +400,7 @@ mod tests {
             ))),
         };
 
-        assert!(render_plain_payload(&app, &completed_entry).is_empty());
+        assert!(render_plain_payload(&app, &tool_outcomes, &completed_entry, 100).is_empty());
     }
 
     #[test]
@@ -392,7 +413,7 @@ mod tests {
             })),
         }]);
 
-        let conversation = build_conversation_lines(&app, Vec::new());
+        let conversation = build_conversation_lines(&app, Vec::new(), 100);
         let function_line = conversation
             .lines
             .iter()

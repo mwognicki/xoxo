@@ -5,14 +5,16 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use agentix::tooling::{
     ErasedTool, Tool, ToolContext, ToolError, ToolRegistration, ToolSchema,
 };
 
+const PATCH_FILE_CONTEXT_LINES: usize = 4;
+
 /// A single file update operation addressed against the original file.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PatchFile {
     /// Remove lines `start` through `end` inclusive (1-based).
@@ -27,6 +29,47 @@ pub enum PatchFile {
 struct PatchFileInput {
     file_path: String,
     updates: Vec<PatchFile>,
+}
+
+#[derive(Debug, Serialize)]
+struct PatchFileDiffPreview {
+    kind: &'static str,
+    file_path: String,
+    summary: String,
+    stats: PatchFileDiffStats,
+    rows: Vec<PatchFileDiffRow>,
+}
+
+#[derive(Debug, Serialize)]
+struct PatchFileDiffStats {
+    added: usize,
+    removed: usize,
+    modified: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PatchFileDiffRow {
+    change: PatchFileDiffChange,
+    left_line_number: Option<usize>,
+    right_line_number: Option<usize>,
+    left_content: String,
+    right_content: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PatchFileDiffChange {
+    Added,
+    Context,
+    Omitted,
+    Removed,
+    Modified,
+}
+
+struct PlannedUpdates {
+    removed: HashSet<usize>,
+    replacements: HashMap<usize, String>,
+    inserts: HashMap<usize, Vec<String>>,
 }
 
 /// Tool implementation for patching an existing file with line-based updates.
@@ -48,6 +91,11 @@ impl PatchFileTool {
         } else {
             None
         };
+        let original_content = fs::read_to_string(file_path).map_err(|err| {
+            ToolError::ExecutionFailed(err.to_string())
+        })?;
+        let diff_preview =
+            build_diff_preview(file_path, &original_content, &updates).map_err(ToolError::ExecutionFailed)?;
 
         if let (Some(exec_ctx), Some(original_md5)) = (&ctx.execution_context, original_md5.as_deref()) {
             exec_ctx
@@ -78,6 +126,7 @@ impl PatchFileTool {
             "exists": true,
             "md5": updated_md5,
             "line_count": split_lines(&updated).len(),
+            "diff_preview": diff_preview,
         }))
     }
 
@@ -96,7 +145,7 @@ impl Tool for PatchFileTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "patch_file".to_string(),
-            description: "Apply a batch of line-based edits to an existing file atomically. Update line numbers are interpreted against the original file before any edits are applied.".to_string(),
+            description: "Apply a batch of line-based edits to an existing file atomically. Requires file state to match the tracked baseline verified via MD5. Multiple sequential calls require re-reading the file after each patch to get fresh line numbers and MD5. All line numbers in a single call are interpreted against the original file before any edits, not incrementally, so operations cannot reference lines added or removed by other updates in the same batch. For multiple unrelated edits, batch them in a single call. Multiple calls require fresh file state from `read_file` to avoid MD5 mismatch failures. Pass a real structured object with `file_path` and `updates` fields, not a JSON-formatted string. Fails with 'MD5 mismatch' if the file changed externally or between calls, and with invalid input errors if updates are provided as JSON strings instead of raw array objects.".to_string(),
             parameters: json!({
                 "type": "object",
                 "required": ["file_path", "updates"],
@@ -104,11 +153,11 @@ impl Tool for PatchFileTool {
                 "properties": {
                     "file_path": {
                         "type": "string",
-                        "description": "Path to an existing file, absolute or relative to the current working directory."
+                        "description": "Path to an existing file, absolute or relative to the current working directory. The path must resolve against the same file state tracked by the current MD5 baseline. Provide the raw string path value, not a stringified JSON object."
                     },
                     "updates": {
                         "type": "array",
-                        "description": "Batch of line-based update operations, all referenced against the original file.",
+                        "description": "Batch of line-based update operations, all referenced against the original file before any edits are applied. Provide a real array of operation objects, not JSON-formatted text. Do not split unrelated edits across multiple calls unless you re-read the file first to refresh line numbers and MD5.",
                         "items": {
                             "oneOf": [
                                 {
@@ -154,10 +203,11 @@ impl Tool for PatchFileTool {
     }
 
     fn map_to_preview(&self, output: &Value) -> String {
-        let file_path = output["file_path"].as_str();
-        let checksum = output["md5"].as_str();
+        if let Some(diff_preview) = output.get("diff_preview") {
+            return diff_preview.to_string();
+        }
 
-        match (file_path, checksum) {
+        match (output["file_path"].as_str(), output["md5"].as_str()) {
             (Some(file_path), Some(checksum)) => {
                 format!("File patched: {file_path} (MD5: {checksum})")
             }
@@ -218,7 +268,41 @@ pub fn apply_updates(content: String, updates: Vec<PatchFile>) -> Result<String,
     let has_trailing = content.ends_with('\n') || content.ends_with('\r');
     let original = split_lines(&content);
     let line_count = original.len();
+    let PlannedUpdates {
+        removed,
+        replacements,
+        inserts,
+    } = plan_updates(line_count, updates)?;
 
+    let mut output = Vec::new();
+
+    if let Some(lines) = inserts.get(&0) {
+        output.extend(lines.iter().cloned());
+    }
+
+    for line_number in 1..=line_count {
+        if !removed.contains(&line_number) {
+            let line = replacements
+                .get(&line_number)
+                .cloned()
+                .unwrap_or_else(|| original[line_number - 1].clone());
+            output.push(line);
+        }
+
+        if let Some(lines) = inserts.get(&line_number) {
+            output.extend(lines.iter().cloned());
+        }
+    }
+
+    let mut result = output.join(ending);
+    if has_trailing && !output.is_empty() {
+        result.push_str(ending);
+    }
+
+    Ok(result)
+}
+
+fn plan_updates(line_count: usize, updates: Vec<PatchFile>) -> Result<PlannedUpdates, String> {
     let mut removed = HashSet::new();
     let mut replacements = HashMap::new();
     let mut inserts: HashMap<usize, Vec<String>> = HashMap::new();
@@ -278,32 +362,154 @@ pub fn apply_updates(content: String, updates: Vec<PatchFile>) -> Result<String,
         }
     }
 
-    let mut output = Vec::new();
+    Ok(PlannedUpdates {
+        removed,
+        replacements,
+        inserts,
+    })
+}
+
+fn build_diff_preview(
+    file_path: &str,
+    original_content: &str,
+    updates: &[PatchFile],
+) -> Result<PatchFileDiffPreview, String> {
+    let original_lines = split_lines(original_content);
+    let PlannedUpdates {
+        removed,
+        replacements,
+        inserts,
+    } = plan_updates(original_lines.len(), updates.to_vec())?;
+
+    let mut all_rows = Vec::new();
+    let mut right_line_number = 1usize;
+    let mut added = 0usize;
+    let mut removed_count = 0usize;
+    let mut modified = 0usize;
 
     if let Some(lines) = inserts.get(&0) {
-        output.extend(lines.iter().cloned());
-    }
-
-    for line_number in 1..=line_count {
-        if !removed.contains(&line_number) {
-            let line = replacements
-                .get(&line_number)
-                .cloned()
-                .unwrap_or_else(|| original[line_number - 1].clone());
-            output.push(line);
-        }
-
-        if let Some(lines) = inserts.get(&line_number) {
-            output.extend(lines.iter().cloned());
+        for line in lines {
+            all_rows.push(PatchFileDiffRow {
+                change: PatchFileDiffChange::Added,
+                left_line_number: None,
+                right_line_number: Some(right_line_number),
+                left_content: String::new(),
+                right_content: line.clone(),
+            });
+            right_line_number += 1;
+            added += 1;
         }
     }
 
-    let mut result = output.join(ending);
-    if has_trailing && !output.is_empty() {
-        result.push_str(ending);
+    for original_line_number in 1..=original_lines.len() {
+        let original_line = &original_lines[original_line_number - 1];
+        if removed.contains(&original_line_number) {
+            all_rows.push(PatchFileDiffRow {
+                change: PatchFileDiffChange::Removed,
+                left_line_number: Some(original_line_number),
+                right_line_number: None,
+                left_content: original_line.clone(),
+                right_content: String::new(),
+            });
+            removed_count += 1;
+        } else if let Some(replacement) = replacements.get(&original_line_number) {
+            all_rows.push(PatchFileDiffRow {
+                change: PatchFileDiffChange::Modified,
+                left_line_number: Some(original_line_number),
+                right_line_number: Some(right_line_number),
+                left_content: original_line.clone(),
+                right_content: replacement.clone(),
+            });
+            right_line_number += 1;
+            modified += 1;
+        } else {
+            all_rows.push(PatchFileDiffRow {
+                change: PatchFileDiffChange::Context,
+                left_line_number: Some(original_line_number),
+                right_line_number: Some(right_line_number),
+                left_content: original_line.clone(),
+                right_content: original_line.clone(),
+            });
+            right_line_number += 1;
+        }
+
+        if let Some(lines) = inserts.get(&original_line_number) {
+            for line in lines {
+                all_rows.push(PatchFileDiffRow {
+                    change: PatchFileDiffChange::Added,
+                    left_line_number: None,
+                    right_line_number: Some(right_line_number),
+                    left_content: String::new(),
+                    right_content: line.clone(),
+                });
+                right_line_number += 1;
+                added += 1;
+            }
+        }
     }
 
-    Ok(result)
+    let rows = select_context_rows(&all_rows, PATCH_FILE_CONTEXT_LINES);
+
+    Ok(PatchFileDiffPreview {
+        kind: "patch_file_diff",
+        file_path: file_path.to_string(),
+        summary: format!(
+            "File patched: {file_path} (+{added} -{removed_count} ~{modified})"
+        ),
+        stats: PatchFileDiffStats {
+            added,
+            removed: removed_count,
+            modified,
+        },
+        rows,
+    })
+}
+
+fn select_context_rows(rows: &[PatchFileDiffRow], context_lines: usize) -> Vec<PatchFileDiffRow> {
+    let changed_indexes: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(index, row)| {
+            if matches!(row.change, PatchFileDiffChange::Added | PatchFileDiffChange::Removed | PatchFileDiffChange::Modified) {
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if changed_indexes.is_empty() {
+        return Vec::new();
+    }
+
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for index in changed_indexes {
+        let start = index.saturating_sub(context_lines);
+        let end = (index + context_lines + 1).min(rows.len());
+        if let Some(last) = ranges.last_mut()
+            && start <= last.1
+        {
+            last.1 = last.1.max(end);
+        } else {
+            ranges.push((start, end));
+        }
+    }
+
+    let mut selected = Vec::new();
+    for (range_index, (start, end)) in ranges.iter().copied().enumerate() {
+        if range_index > 0 {
+            selected.push(PatchFileDiffRow {
+                change: PatchFileDiffChange::Omitted,
+                left_line_number: None,
+                right_line_number: None,
+                left_content: "...".to_string(),
+                right_content: "...".to_string(),
+            });
+        }
+        selected.extend(rows[start..end].iter().cloned());
+    }
+
+    selected
 }
 
 fn patch_file_impl(
@@ -363,7 +569,7 @@ fn detect_line_ending(content: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{PatchFile, PatchFileTool, apply_updates};
+    use super::{PatchFile, PatchFileDiffChange, PatchFileTool, apply_updates, build_diff_preview};
     use serde_json::json;
     use std::fs;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -412,6 +618,98 @@ mod tests {
         .unwrap();
 
         assert_eq!(result, "one\r\ntwo\r\nthree\r\n");
+    }
+
+    #[test]
+    fn builds_structured_diff_preview_for_mixed_changes() {
+        let preview = build_diff_preview(
+            "src/main.rs",
+            "one\ntwo\nthree\nfour\n",
+            &[
+                PatchFile::Insert {
+                    after_line: 0,
+                    lines: vec!["zero".to_string()],
+                },
+                PatchFile::Replace {
+                    line: 2,
+                    content: "TWO".to_string(),
+                },
+                PatchFile::Remove { start: 3, end: 3 },
+                PatchFile::Insert {
+                    after_line: 4,
+                    lines: vec!["five".to_string()],
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(preview.kind, "patch_file_diff");
+        assert_eq!(preview.file_path, "src/main.rs");
+        assert_eq!(preview.stats.added, 2);
+        assert_eq!(preview.stats.removed, 1);
+        assert_eq!(preview.stats.modified, 1);
+        assert_eq!(preview.rows.len(), 6);
+
+        assert!(matches!(preview.rows[0].change, PatchFileDiffChange::Added));
+        assert_eq!(preview.rows[0].right_line_number, Some(1));
+        assert_eq!(preview.rows[0].right_content, "zero");
+
+        assert!(matches!(preview.rows[1].change, PatchFileDiffChange::Context));
+        assert_eq!(preview.rows[1].left_line_number, Some(1));
+        assert_eq!(preview.rows[1].right_line_number, Some(2));
+        assert_eq!(preview.rows[1].left_content, "one");
+
+        assert!(matches!(preview.rows[2].change, PatchFileDiffChange::Modified));
+        assert_eq!(preview.rows[2].left_line_number, Some(2));
+        assert_eq!(preview.rows[2].right_line_number, Some(3));
+        assert_eq!(preview.rows[2].left_content, "two");
+        assert_eq!(preview.rows[2].right_content, "TWO");
+
+        assert!(matches!(preview.rows[3].change, PatchFileDiffChange::Removed));
+        assert_eq!(preview.rows[3].left_line_number, Some(3));
+        assert_eq!(preview.rows[3].right_line_number, None);
+        assert_eq!(preview.rows[3].left_content, "three");
+
+        assert!(matches!(preview.rows[4].change, PatchFileDiffChange::Context));
+        assert_eq!(preview.rows[4].left_line_number, Some(4));
+        assert_eq!(preview.rows[4].right_line_number, Some(4));
+        assert_eq!(preview.rows[4].left_content, "four");
+
+        assert!(matches!(preview.rows[5].change, PatchFileDiffChange::Added));
+        assert_eq!(preview.rows[5].right_line_number, Some(5));
+        assert_eq!(preview.rows[5].right_content, "five");
+    }
+
+    #[test]
+    fn diff_preview_collapses_distant_hunks_with_context() {
+        let preview = build_diff_preview(
+            "src/main.rs",
+            "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n",
+            &[
+                PatchFile::Replace {
+                    line: 2,
+                    content: "two".to_string(),
+                },
+                PatchFile::Replace {
+                    line: 15,
+                    content: "eleven".to_string(),
+                },
+            ],
+        )
+        .unwrap();
+
+        assert!(preview
+            .rows
+            .iter()
+            .any(|row| matches!(row.change, PatchFileDiffChange::Omitted)));
+        assert!(preview
+            .rows
+            .iter()
+            .any(|row| row.left_line_number == Some(1) && matches!(row.change, PatchFileDiffChange::Context)));
+        assert!(preview
+            .rows
+            .iter()
+            .any(|row| row.left_line_number == Some(18) && matches!(row.change, PatchFileDiffChange::Context)));
     }
 
     #[test]

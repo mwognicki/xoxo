@@ -1,35 +1,22 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use xoxo_core::bus::BusPayload;
-use xoxo_core::chat::structs::{ToolCallEvent, ToolCallStarted};
+use std::collections::HashMap;
+
+use xoxo_core::chat::structs::{ChatToolCallId, ToolCallEvent, ToolCallStarted};
 
 use crate::app::App;
 
-pub(crate) fn default_tool_byline(app: &App, started: &ToolCallStarted) -> Line<'static> {
-    tool_byline(app, started)
-}
+pub(crate) type ToolOutcomeLookup<'a> = HashMap<ChatToolCallId, &'a ToolCallEvent>;
 
 pub(crate) fn default_tool_result_lines(content: &str, is_error: bool) -> Vec<Line<'static>> {
     tool_result_lines(content, is_error)
 }
 
 pub(super) fn tool_outcome<'a>(
-    app: &'a App,
+    tool_outcomes: &'a ToolOutcomeLookup<'_>,
     started: &ToolCallStarted,
 ) -> Option<&'a ToolCallEvent> {
-    app.history.iter().find_map(|entry| match entry.payload.as_bus()? {
-        BusPayload::ToolCall(event @ ToolCallEvent::Completed(completed))
-            if completed.tool_call_id == started.tool_call_id =>
-        {
-            Some(event)
-        }
-        BusPayload::ToolCall(event @ ToolCallEvent::Failed(failed))
-            if failed.tool_call_id == started.tool_call_id =>
-        {
-            Some(event)
-        }
-        _ => None,
-    })
+    tool_outcomes.get(&started.tool_call_id).copied()
 }
 
 fn format_tool_arguments(arguments: &impl std::fmt::Display) -> String {
@@ -57,17 +44,25 @@ fn pulsing_tool_dot_style(app: &App) -> Style {
     style
 }
 
-fn tool_dot_style(app: &App, started: &ToolCallStarted) -> Style {
-    match tool_outcome(app, started) {
+fn tool_dot_style(
+    app: &App,
+    tool_outcomes: &ToolOutcomeLookup<'_>,
+    started: &ToolCallStarted,
+) -> Style {
+    match tool_outcome(tool_outcomes, started) {
         Some(ToolCallEvent::Completed(_)) => Style::default().fg(Color::Indexed(70)),
         Some(ToolCallEvent::Failed(_)) => Style::default().fg(Color::Indexed(160)),
         _ => pulsing_tool_dot_style(app),
     }
 }
 
-fn tool_byline(app: &App, started: &ToolCallStarted) -> Line<'static> {
+fn tool_byline(
+    app: &App,
+    tool_outcomes: &ToolOutcomeLookup<'_>,
+    started: &ToolCallStarted,
+) -> Line<'static> {
     let mut spans = vec![
-        Span::styled("• ", tool_dot_style(app, started)),
+        Span::styled("• ", tool_dot_style(app, tool_outcomes, started)),
         Span::styled(
             started.tool_name.clone(),
             Style::default()
@@ -81,6 +76,36 @@ fn tool_byline(app: &App, started: &ToolCallStarted) -> Line<'static> {
         spans.push(Span::styled(arguments, Style::default().fg(Color::Gray)));
     }
     Line::from(spans)
+}
+
+pub(crate) fn build_tool_outcome_lookup<'a>(app: &'a App) -> ToolOutcomeLookup<'a> {
+    let mut tool_outcomes = HashMap::new();
+
+    for entry in &app.history {
+        let Some(event) = entry.payload.as_bus().and_then(|payload| match payload {
+            xoxo_core::bus::BusPayload::ToolCall(
+                event @ ToolCallEvent::Completed(completed),
+            ) => Some((completed.tool_call_id.clone(), event)),
+            xoxo_core::bus::BusPayload::ToolCall(event @ ToolCallEvent::Failed(failed)) => {
+                Some((failed.tool_call_id.clone(), event))
+            }
+            _ => None,
+        }) else {
+            continue;
+        };
+
+        tool_outcomes.insert(event.0, event.1);
+    }
+
+    tool_outcomes
+}
+
+pub(crate) fn default_tool_byline_with_lookup(
+    app: &App,
+    tool_outcomes: &ToolOutcomeLookup<'_>,
+    started: &ToolCallStarted,
+) -> Line<'static> {
+    tool_byline(app, tool_outcomes, started)
 }
 
 fn tool_result_lines(content: &str, is_error: bool) -> Vec<Line<'static>> {

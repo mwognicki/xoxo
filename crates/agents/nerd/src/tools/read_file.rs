@@ -93,7 +93,7 @@ impl Tool for ReadFileTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "read_file".to_string(),
-            description: "Read a file from disk, optionally limited to a 1-indexed inclusive line range. Can optionally include comments and other noise.".to_string(),
+            description: "Read a file from disk, optionally limited to a 1-indexed inclusive line range. By default it returns code with comments and other noise stripped (`with_noise=false`). Use `with_noise=true` to include all content for line-number accuracy when patching. When a line range is specified, the requested bounds are 1-indexed inclusive and returned lines keep their original numbering relative to the full file.".to_string(),
             parameters: json!({
                 "type": "object",
                 "required": ["file_path"],
@@ -105,11 +105,11 @@ impl Tool for ReadFileTool {
                     },
                     "line_range": {
                         "type": "string",
-                        "description": "Optional 1-indexed inclusive line range in the format 'start:end'."
+                        "description": "Optional 1-indexed inclusive line range in the format 'start:end'. Returned lines keep their original numbering relative to the full file."
                     },
                     "with_noise": {
                         "type": "boolean",
-                        "description": "When true, return the raw file including comments and other noise. Defaults to false."
+                        "description": "When true, return the raw file including comments and other noise. Defaults to false, which strips comments and other noise."
                     }
                 }
             }),
@@ -169,7 +169,7 @@ fn map_read_file_error(error: ReadFileError) -> ToolError {
 ///
 /// * `file_path` - Path to the file (absolute or relative to PWD)
 /// * `line_range` - Optional line range in format "start:end" (1-indexed, inclusive)
-/// * `with_noise` - If truthy, strips the file of comments before returning
+/// * `with_noise` - If true, returns the raw file including comments and other noise
 ///
 /// # Returns
 ///

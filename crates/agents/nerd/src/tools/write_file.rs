@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use agentix::tooling::{
     ErasedTool, Tool, ToolContext, ToolError, ToolRegistration, ToolSchema,
@@ -35,6 +35,13 @@ pub type WriteFileResult = Result<String, WriteFileError>;
 
 #[derive(Debug, Deserialize)]
 struct WriteFileInput {
+    file_path: String,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+struct WriteFilePreview {
+    kind: &'static str,
     file_path: String,
     content: String,
 }
@@ -72,6 +79,11 @@ impl WriteFileTool {
             "exists": true,
             "md5": checksum,
             "line_count": content.lines().count(),
+            "content_preview": WriteFilePreview {
+                kind: "write_file_preview",
+                file_path: file_path.to_string(),
+                content: content.to_string(),
+            },
         }))
     }
 
@@ -109,6 +121,10 @@ impl Tool for WriteFileTool {
     }
 
     fn map_to_preview(&self, output: &Value) -> String {
+        if let Some(preview) = output.get("content_preview") {
+            return preview.to_string();
+        }
+
         let file_path = output["file_path"].as_str();
         let checksum = output["md5"].as_str();
 
@@ -293,17 +309,27 @@ mod tests {
         assert_eq!(output["exists"], true);
         assert_eq!(output["md5"], format!("{:x}", md5::compute("Line 1\nLine 2")));
         assert_eq!(output["line_count"], 2);
+        assert_eq!(output["content_preview"]["kind"], "write_file_preview");
+        assert_eq!(output["content_preview"]["file_path"], file_path_str);
+        assert_eq!(output["content_preview"]["content"], "Line 1\nLine 2");
         assert_eq!(fs::read_to_string(file_path).unwrap(), "Line 1\nLine 2");
     }
 
     #[test]
-    fn test_map_to_preview_includes_checksum() {
+    fn test_map_to_preview_prefers_content_preview() {
         let preview = Tool::map_to_preview(&WriteFileTool, &json!({
             "file_path": "/tmp/example.txt",
             "md5": "abc123",
+            "content_preview": {
+                "kind": "write_file_preview",
+                "file_path": "/tmp/example.txt",
+                "content": "fn main() {}\n",
+            }
         }));
 
-        assert_eq!(preview, "File saved: /tmp/example.txt (MD5: abc123)");
+        assert!(preview.contains("\"write_file_preview\""));
+        assert!(preview.contains("\"/tmp/example.txt\""));
+        assert!(preview.contains("fn main()"));
     }
 }
 

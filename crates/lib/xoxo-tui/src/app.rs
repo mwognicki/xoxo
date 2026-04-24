@@ -38,6 +38,7 @@ use stats::derive_model_stats;
 pub(crate) struct ConversationCacheKey {
     pub(crate) version: u64,
     pub(crate) spinner_phase: Option<u128>,
+    pub(crate) viewport_width: u16,
 }
 
 /// Cached conversation pane produced by the UI layer. Owned `Line<'static>`s
@@ -220,10 +221,11 @@ impl App {
     }
 
     /// Cache key identifying the current conversation build inputs.
-    pub(crate) fn conversation_cache_key(&self) -> ConversationCacheKey {
+    pub(crate) fn conversation_cache_key(&self, viewport_width: u16) -> ConversationCacheKey {
         ConversationCacheKey {
             version: self.conversation_version,
             spinner_phase: self.spinner_phase(),
+            viewport_width,
         }
     }
 

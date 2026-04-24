@@ -30,7 +30,9 @@ use mention::render_mention_popup;
 use modal::render_modal;
 use status_bar::render_status_bar;
 
-pub(crate) use tool_lines::{default_tool_byline, default_tool_result_lines};
+pub(crate) use tool_lines::{
+    default_tool_byline_with_lookup, default_tool_result_lines, ToolOutcomeLookup,
+};
 
 pub(super) const ASSISTANT_PADDING: &str = "  ";
 
@@ -63,15 +65,16 @@ pub fn draw(frame: &mut Frame, mode: LayoutMode, app: &App) {
 fn draw_main(frame: &mut Frame, app: &App) {
     let input_prompt = "> ";
     let header_lines = render_header_lines(app);
-    let conversation = history::build_conversation_lines(app, header_lines);
-    let input_height = input_box_height(app, input_prompt, frame.area());
-
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(0)
         .vertical_margin(1)
-        .constraints([Constraint::Min(0), Constraint::Length(input_height)])
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(input_box_height(app, input_prompt, frame.area())),
+        ])
         .split(frame.area());
+    let conversation = history::build_conversation_lines(app, header_lines, chunks[0].width);
 
     let status_area = Rect {
         x: 1, // Account for left margin
