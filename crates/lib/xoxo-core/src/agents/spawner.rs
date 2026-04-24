@@ -1,28 +1,24 @@
-use crate::agents::{AgentHandle, HandleError, HandleRegistry};
-use crate::bus::{BusEnvelope, BusEvent, BusPayload, Command};
+use crate::agents::{AgentHandle, HandleRegistry};
+use crate::bus::{BusEvent, Command};
 use crate::chat::structs::{
-    ApiCompatibility, ApiProvider, BranchId, Chat, ChatAgent, ChatBranch, ChatEvent,
-    ChatEventBody, ChatLogEntry, ChatPath, ChatTextMessage, ChatTextRole, ChatToolCallId,
-    MessageContextState, MessageId, ModelConfig, ToolCallCompleted, ToolCallEvent, ToolCallFailed,
-    ToolCallKind, ToolCallStarted, current_chat_timestamp,
+    ApiCompatibility, ApiProvider, BranchId, Chat, ChatAgent, ChatBranch, ChatPath,
+    ChatTextMessage, ChatTextRole, ModelConfig, current_chat_timestamp,
 };
 use crate::config::ProviderConfig;
-use crate::llm::{
-    LlmCompletionRequest, LlmCompletionResponse, LlmFacade, LlmStreamEvent, LlmToolCall,
-};
-use crate::llm::LlmFinishReason;
-use futures::StreamExt;
-use crate::storage::{Storage, StorageError, bootstrap_storage};
+use crate::storage::{Storage, bootstrap_storage};
 use crate::tooling::{
-    BashOptions, ToolContext, ToolError, ToolExecutionContext, ToolRegistry, ToolSet,
+    BashOptions, ToolContext, ToolExecutionContext, ToolRegistry, ToolSet,
 };
 use futures::future::BoxFuture;
 use futures::FutureExt;
 use std::collections::HashMap;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use uuid::Uuid;
+
+use super::handles::LocalAgentHandle;
+use super::structs::{AgentRunner, AgentSpawner, InlineSubagentSpec, SpawnInput, SubagentHandoff};
 
 pub type SpawnFuture<'a, T> = BoxFuture<'a, T>;
 
@@ -47,30 +43,6 @@ pub enum HandoffKind {
     Cancelled,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct SubagentHandoff {
-    pub kind: HandoffKind,
-    pub chat: Chat,
-    pub summary: Option<String>,
-    pub observability: Option<crate::chat::structs::CostObservability>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InlineSubagentSpec {
-    pub task: String,
-    pub system_prompt: String,
-    pub tools: Vec<String>,
-    pub model: Option<String>,
-    pub context: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpawnInput {
-    pub inline_spec: InlineSubagentSpec,
-    pub initial_prompt: String,
-    pub parent_path: ChatPath,
-}
-
 impl SpawnInput {
     pub fn inline(
         inline_spec: InlineSubagentSpec,
@@ -87,16 +59,6 @@ impl SpawnInput {
 
 pub trait Spawner: Send + Sync {
     fn spawn(&self, input: SpawnInput) -> SpawnFuture<'_, Result<Arc<dyn AgentHandle>, SpawnError>>;
-}
-
-pub struct AgentSpawner {
-    self_weak: Weak<Self>,
-    registry: Arc<Mutex<HandleRegistry>>,
-    persisted_chats: Arc<Mutex<HashMap<Uuid, Chat>>>,
-    storage: Arc<Storage>,
-    tree_execution_contexts: Arc<Mutex<HashMap<Uuid, Arc<ToolExecutionContext>>>>,
-    tool_registry: Arc<ToolRegistry>,
-    events: broadcast::Sender<BusEvent>,
 }
 
 impl AgentSpawner {
@@ -236,7 +198,13 @@ impl AgentSpawner {
         chat_id: Uuid,
         provider_config: ProviderConfig,
     ) -> Result<Option<Arc<dyn AgentHandle>>, SpawnError> {
-        let Some(chat) = self.storage.load_chat(chat_id).map_err(map_storage_error)? else {
+        let Some(chat) = self
+            .storage
+            .load_chat(chat_id)
+            .map_err(|error| SpawnError::Storage {
+                message: error.to_string(),
+            })?
+        else {
             return Ok(None);
         };
 
@@ -491,445 +459,5 @@ impl Spawner for AgentSpawner {
         input: SpawnInput,
     ) -> SpawnFuture<'_, Result<Arc<dyn AgentHandle>, SpawnError>> {
         async move { self.do_spawn(input).await }.boxed()
-    }
-}
-
-struct LocalAgentHandle {
-    chat_id: Uuid,
-    path: ChatPath,
-    sender: mpsc::Sender<Command>,
-}
-
-impl LocalAgentHandle {
-    fn new(chat_id: Uuid, path: ChatPath, sender: mpsc::Sender<Command>) -> Self {
-        Self { chat_id, path, sender }
-    }
-}
-
-impl AgentHandle for LocalAgentHandle {
-    fn chat_id(&self) -> &Uuid {
-        &self.chat_id
-    }
-
-    fn path(&self) -> &ChatPath {
-        &self.path
-    }
-
-    fn send(&self, cmd: Command) -> SpawnFuture<'_, Result<(), HandleError>> {
-        async move {
-            match &cmd {
-                Command::SendUserMessage { .. } if self.path.depth() > 0 => {
-                    return Err(HandleError::NonRootUserMessage);
-                }
-                Command::SubmitUserMessage { .. } => {}
-                _ => {}
-            }
-
-            self.sender.send(cmd).await.map_err(|_| HandleError::Closed)
-        }
-        .boxed()
-    }
-
-    fn shutdown(&self) -> SpawnFuture<'_, Result<(), HandleError>> {
-        async move {
-            self.sender
-                .send(Command::Shutdown {
-                    path: self.path.clone(),
-                })
-                .await
-                .map_err(|_| HandleError::Closed)
-        }
-        .boxed()
-    }
-}
-
-struct AgentRunner {
-    inbound: mpsc::Receiver<Command>,
-    history: Chat,
-    blueprint: ChatAgent,
-    tool_set: ToolSet,
-    tool_context: ToolContext,
-    events: broadcast::Sender<BusEvent>,
-    path: ChatPath,
-    handoff_tx: Option<oneshot::Sender<SubagentHandoff>>,
-    provider_config: Option<ProviderConfig>,
-    storage: Arc<Storage>,
-}
-
-impl AgentRunner {
-    async fn run(mut self) -> Chat {
-        while let Some(command) = self.inbound.recv().await {
-            match command {
-                Command::SubmitUserMessage { .. } => {}
-                Command::SendUserMessage { message, .. } => {
-                    self.push_message_event(message.clone(), None);
-                    let _ = self.events.send(BusEnvelope {
-                        path: self.path.clone(),
-                        payload: BusPayload::Message(message.clone()),
-                    });
-                    let _ = self.events.send(BusEnvelope {
-                        path: self.path.clone(),
-                        payload: BusPayload::Turn(crate::bus::TurnEvent::Started),
-                    });
-
-                    let mut next_message;
-                    loop {
-                        let completion = self.complete().await;
-                        self.push_message_event(
-                            completion.message.clone(),
-                            completion.observability.clone(),
-                        );
-                        let _ = self.events.send(BusEnvelope {
-                            path: self.path.clone(),
-                            payload: BusPayload::Message(completion.message.clone()),
-                        });
-
-                        if completion.finish_reason == LlmFinishReason::Stop {
-                            let _ = self.events.send(BusEnvelope {
-                                path: self.path.clone(),
-                                payload: BusPayload::Turn(crate::bus::TurnEvent::Finished {
-                                    reason: completion.finish_reason,
-                                }),
-                            });
-                            break;
-                        }
-
-                        let tool_result = self.dispatch_tool_calls(completion.tool_calls).await;
-                        next_message = ChatTextMessage {
-                            role: ChatTextRole::User,
-                            content: tool_result,
-                        };
-                        self.push_message_event(next_message.clone(), None);
-                    }
-                }
-                Command::Shutdown { .. } => {
-                    let _ = self.events.send(BusEnvelope {
-                        path: self.path.clone(),
-                        payload: BusPayload::AgentShutdown,
-                    });
-                    break;
-                }
-            }
-        }
-
-        if let Some(handoff_tx) = self.handoff_tx.take() {
-            let summary = self
-                .history
-                .events
-                .iter()
-                .rev()
-                .find_map(|entry| match &entry.event.body {
-                    ChatEventBody::Message(message) if message.role == ChatTextRole::Agent => {
-                        Some(message.content.clone())
-                    }
-                    _ => None,
-                });
-
-            let _ = handoff_tx.send(SubagentHandoff {
-                kind: HandoffKind::Completed,
-                chat: self.history.clone(),
-                summary,
-                observability: None,
-            });
-        }
-
-        self.history
-    }
-
-    async fn complete(&self) -> LlmCompletionResponse {
-        let request = LlmCompletionRequest {
-            model: self.blueprint.model.clone(),
-            messages: self.completion_messages(),
-            tools: self
-                .tool_set
-                .iter()
-                .map(|(name, tool)| crate::llm::LlmToolDefinition {
-                    name: name.clone(),
-                    description: Some(tool.schema().description.clone()),
-                    parameters: tool.schema().parameters.clone(),
-                })
-                .collect(),
-            tool_choice: None,
-        };
-
-        if let Some(provider_config) = &self.provider_config {
-            let facade = LlmFacade::new();
-            let mut stream =
-                Box::pin(facade.complete_streaming(provider_config, request.clone()));
-            let mut final_response: Option<LlmCompletionResponse> = None;
-            let mut stream_error: Option<String> = None;
-
-            while let Some(event) = stream.next().await {
-                match event {
-                    Ok(LlmStreamEvent::TextDelta(delta)) => {
-                        let _ = self.events.send(BusEnvelope {
-                            path: self.path.clone(),
-                            payload: BusPayload::TextDelta { delta },
-                        });
-                    }
-                    Ok(LlmStreamEvent::ThinkingDelta(delta)) => {
-                        let _ = self.events.send(BusEnvelope {
-                            path: self.path.clone(),
-                            payload: BusPayload::ThinkingDelta { delta },
-                        });
-                    }
-                    Ok(LlmStreamEvent::Final(response)) => {
-                        final_response = Some(*response);
-                    }
-                    Err(error) => {
-                        stream_error = Some(error.to_string());
-                        break;
-                    }
-                }
-            }
-
-            return match (final_response, stream_error) {
-                (Some(response), None) => response,
-                (_, Some(message)) => LlmCompletionResponse {
-                    message: ChatTextMessage {
-                        role: ChatTextRole::Agent,
-                        content: message,
-                    },
-                    tool_calls: Vec::new(),
-                    finish_reason: LlmFinishReason::Stop,
-                    observability: None,
-                },
-                (None, None) => LlmCompletionResponse {
-                    message: ChatTextMessage {
-                        role: ChatTextRole::Agent,
-                        content: "completion stream ended without emitting a final response"
-                            .to_string(),
-                    },
-                    tool_calls: Vec::new(),
-                    finish_reason: LlmFinishReason::Stop,
-                    observability: None,
-                },
-            };
-        }
-
-        self.stub_complete(request).await
-    }
-
-    fn completion_messages(&self) -> Vec<ChatTextMessage> {
-        let mut messages = vec![ChatTextMessage {
-            role: ChatTextRole::System,
-            content: self.blueprint.base_prompt.clone(),
-        }];
-
-        messages.extend(self.history.events.iter().filter_map(|entry| {
-            match &entry.event.body {
-                ChatEventBody::Message(history_message)
-                    if history_message.role == ChatTextRole::User
-                        || history_message.role == ChatTextRole::Agent =>
-                {
-                    Some(history_message.clone())
-                }
-                _ => None,
-            }
-        }));
-
-        messages
-    }
-
-    async fn stub_complete(&self, request: LlmCompletionRequest) -> LlmCompletionResponse {
-        let last_user_message = request
-            .messages
-            .iter()
-            .rev()
-            .find(|message| message.role == ChatTextRole::User)
-            .map(|message| message.content.clone())
-            .unwrap_or_else(|| "ready".to_string());
-
-        LlmCompletionResponse {
-            message: ChatTextMessage {
-                role: ChatTextRole::Agent,
-                content: format!("stub completion: {last_user_message}"),
-            },
-            tool_calls: Vec::new(),
-            finish_reason: LlmFinishReason::Stop,
-            observability: None,
-        }
-    }
-
-    async fn dispatch_tool_calls(&mut self, calls: Vec<LlmToolCall>) -> String {
-        let mut rendered = String::new();
-        for call in calls {
-            let tool_call_id = ChatToolCallId(Uuid::new_v4().to_string());
-            let arguments = call.arguments.clone().unwrap_or(serde_json::Value::Null);
-
-            self.push_tool_call_event(
-                ToolCallEvent::Started(ToolCallStarted {
-                    tool_call_id: tool_call_id.clone(),
-                    tool_name: call.name.clone(),
-                    arguments: arguments.clone(),
-                    tool_call_kind: ToolCallKind::Generic,
-                }),
-                None,
-            );
-            let _ = self.events.send(BusEnvelope {
-                path: self.path.clone(),
-                payload: BusPayload::ToolCall(ToolCallEvent::Started(ToolCallStarted {
-                    tool_call_id: tool_call_id.clone(),
-                    tool_name: call.name.clone(),
-                    arguments: arguments.clone(),
-                    tool_call_kind: ToolCallKind::Generic,
-                })),
-            });
-
-            let tool = self.tool_set.get(&call.name);
-            let outcome = match tool {
-                Some(tool) => tool
-                    .execute_erased_with_observability(&self.tool_context, arguments)
-                    .await,
-                None => Err(ToolError::ExecutionFailed(format!(
-                    "unknown tool: {}",
-                    call.name
-                ))),
-            };
-
-            let (chat_event, bus_event, rendered_line, observability) = match outcome {
-                Ok(result) => {
-                    let value = result.output;
-                    let preview = tool
-                        .map(|tool| tool.map_to_preview(&value))
-                        .unwrap_or_else(|| value.to_string());
-                    let rendered_value = value.to_string();
-                    (
-                        ToolCallEvent::Completed(ToolCallCompleted {
-                            tool_call_id: tool_call_id.clone(),
-                            tool_name: call.name.clone(),
-                            result_preview: preview.clone(),
-                        }),
-                        ToolCallEvent::Completed(ToolCallCompleted {
-                            tool_call_id: tool_call_id.clone(),
-                            tool_name: call.name.clone(),
-                            result_preview: preview.clone(),
-                        }),
-                        format!("{}: {}", call.name, rendered_value),
-                        result.observability,
-                    )
-                }
-                Err(error) => {
-                    let message = match error {
-                        ToolError::InvalidInput(m) => format!("invalid input: {m}"),
-                        ToolError::ExecutionFailed(m) => m,
-                    };
-                    (
-                        ToolCallEvent::Failed(ToolCallFailed {
-                            tool_call_id: tool_call_id.clone(),
-                            tool_name: call.name.clone(),
-                            message: message.clone(),
-                        }),
-                        ToolCallEvent::Failed(ToolCallFailed {
-                            tool_call_id: tool_call_id.clone(),
-                            tool_name: call.name.clone(),
-                            message: message.clone(),
-                        }),
-                        format!("{} failed: {}", call.name, message),
-                        None,
-                    )
-                }
-            };
-
-            self.push_tool_call_event(chat_event, observability);
-            let _ = self.events.send(BusEnvelope {
-                path: self.path.clone(),
-                payload: BusPayload::ToolCall(bus_event),
-            });
-
-            if !rendered.is_empty() {
-                rendered.push('\n');
-            }
-            rendered.push_str(&rendered_line);
-        }
-        rendered
-    }
-
-    fn push_tool_call_event(
-        &mut self,
-        event: ToolCallEvent,
-        observability: Option<crate::chat::structs::CostObservability>,
-    ) {
-        let next_id = MessageId(Uuid::new_v4().to_string());
-        let parent_id = self.history.events.last().map(|entry| entry.event.id.clone());
-
-        self.history.events.push(ChatLogEntry {
-            event: ChatEvent {
-                id: next_id.clone(),
-                parent_id,
-                branch_id: self.history.active_branch_id.clone(),
-                body: ChatEventBody::ToolCall(event),
-                observability,
-            },
-            context_state: MessageContextState::Active,
-        });
-
-        if let Some(branch) = self
-            .history
-            .branches
-            .iter_mut()
-            .find(|branch| branch.id == self.history.active_branch_id)
-        {
-            branch.head_message_id = Some(next_id);
-        }
-
-        self.persist_history_snapshot();
-    }
-
-    fn push_message_event(
-        &mut self,
-        message: ChatTextMessage,
-        observability: Option<crate::chat::structs::CostObservability>,
-    ) {
-        let next_id = MessageId(Uuid::new_v4().to_string());
-        let parent_id = self.history.events.last().map(|entry| entry.event.id.clone());
-
-        self.history.events.push(ChatLogEntry {
-            event: ChatEvent {
-                id: next_id.clone(),
-                parent_id,
-                branch_id: self.history.active_branch_id.clone(),
-                body: ChatEventBody::Message(message),
-                observability,
-            },
-            context_state: MessageContextState::Active,
-        });
-
-        if let Some(branch) = self
-            .history
-            .branches
-            .iter_mut()
-            .find(|branch| branch.id == self.history.active_branch_id)
-        {
-            branch.head_message_id = Some(next_id);
-        }
-
-        self.persist_history_snapshot();
-    }
-
-    fn persist_history_snapshot(&self) {
-        if let Err(error) = self.storage.save_chat(&self.history) {
-            let _ = self.events.send(BusEnvelope {
-                path: self.path.clone(),
-                payload: BusPayload::Error(crate::bus::ErrorPayload {
-                    message: format!("failed to persist chat snapshot: {error}"),
-                }),
-            });
-        }
-
-        if let Err(error) = self.storage.set_last_used_chat_id(*self.path.root_id()) {
-            let _ = self.events.send(BusEnvelope {
-                path: self.path.clone(),
-                payload: BusPayload::Error(crate::bus::ErrorPayload {
-                    message: format!("failed to persist last used chat id: {error}"),
-                }),
-            });
-        }
-    }
-}
-
-fn map_storage_error(error: StorageError) -> SpawnError {
-    SpawnError::Storage {
-        message: error.to_string(),
     }
 }

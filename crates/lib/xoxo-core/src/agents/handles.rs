@@ -1,10 +1,13 @@
-use crate::bus::{Command};
-use crate::chat::structs::{ChatPath};
+use crate::bus::Command;
+use crate::chat::structs::ChatPath;
 use futures::future::BoxFuture;
-use std::collections::HashMap;
+use futures::FutureExt;
 use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
+
+pub use super::structs::HandleRegistry;
+pub(crate) use super::structs::LocalAgentHandle;
 
 pub type HandleFuture<'a, T> = BoxFuture<'a, T>;
 
@@ -23,11 +26,6 @@ pub enum HandleError {
     NonRootUserMessage,
     #[error("agent handle is closed")]
     Closed,
-}
-
-#[derive(Default)]
-pub struct HandleRegistry {
-    handles: HashMap<Uuid, Arc<dyn AgentHandle>>,
 }
 
 impl HandleRegistry {
@@ -72,11 +70,58 @@ impl HandleRegistry {
     }
 }
 
+impl LocalAgentHandle {
+    pub(crate) fn new(chat_id: Uuid, path: ChatPath, sender: tokio::sync::mpsc::Sender<Command>) -> Self {
+        Self {
+            chat_id,
+            path,
+            sender,
+        }
+    }
+}
+
+impl AgentHandle for LocalAgentHandle {
+    fn chat_id(&self) -> &Uuid {
+        &self.chat_id
+    }
+
+    fn path(&self) -> &ChatPath {
+        &self.path
+    }
+
+    fn send(&self, cmd: Command) -> HandleFuture<'_, Result<(), HandleError>> {
+        async move {
+            match &cmd {
+                Command::SendUserMessage { .. } if self.path.depth() > 0 => {
+                    return Err(HandleError::NonRootUserMessage);
+                }
+                Command::SubmitUserMessage { .. } => {}
+                _ => {}
+            }
+
+            self.sender.send(cmd).await.map_err(|_| HandleError::Closed)
+        }
+        .boxed()
+    }
+
+    fn shutdown(&self) -> HandleFuture<'_, Result<(), HandleError>> {
+        async move {
+            self.sender
+                .send(Command::Shutdown {
+                    path: self.path.clone(),
+                })
+                .await
+                .map_err(|_| HandleError::Closed)
+        }
+        .boxed()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use futures::FutureExt;
     use crate::bus::UserMessage;
     use crate::chat::structs::ChatTextRole;
+
     use super::*;
 
     struct StubHandle {
