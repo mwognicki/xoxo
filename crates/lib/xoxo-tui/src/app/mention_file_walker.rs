@@ -16,7 +16,7 @@ pub const MAX_VISIBLE: usize = 8;
 
 /// A single candidate path that can be picked via the `@`-mention popup.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MentionEntry {
+pub struct FileWalkerMentionEntry {
     /// Path relative to the workspace root, using forward slashes.
     pub rel_path: String,
     /// Whether the entry refers to a directory (rendered with a trailing `/`).
@@ -24,13 +24,13 @@ pub struct MentionEntry {
 }
 
 /// Live state for the `@`-mention picker popup.
-pub struct MentionPopup {
+pub struct FileWalkerMentionPopup {
     /// Byte index in `App::input` where the trigger `@` was typed.
     pub trigger_at: usize,
     /// Lowercased filter derived from the characters typed after `@`.
     filter: String,
     /// All candidate entries from the initial workspace walk.
-    all_entries: Arc<[MentionEntry]>,
+    all_entries: Arc<[FileWalkerMentionEntry]>,
     /// Indices into `all_entries` that match the current filter, capped at
     /// [`MAX_VISIBLE`].
     visible: Vec<usize>,
@@ -38,7 +38,7 @@ pub struct MentionPopup {
     selected: usize,
 }
 
-impl MentionPopup {
+impl FileWalkerMentionPopup {
     /// Opens a new popup anchored at `trigger_at` in the input buffer, eagerly
     /// walking the workspace rooted at `workspace_root`.
     ///
@@ -61,7 +61,7 @@ impl MentionPopup {
     /// Builds a popup from a pre-supplied list of entries. Intended for tests
     /// that need deterministic candidates without touching the filesystem.
     #[cfg(test)]
-    pub fn with_entries(trigger_at: usize, entries: Vec<MentionEntry>) -> Self {
+    pub fn with_entries(trigger_at: usize, entries: Vec<FileWalkerMentionEntry>) -> Self {
         let mut popup = Self {
             trigger_at,
             filter: String::new(),
@@ -94,13 +94,13 @@ impl MentionPopup {
     }
 
     /// Returns the currently highlighted entry, if any.
-    pub fn selected_entry(&self) -> Option<&MentionEntry> {
+    pub fn selected_entry(&self) -> Option<&FileWalkerMentionEntry> {
         let index = *self.visible.get(self.selected)?;
         self.all_entries.get(index)
     }
 
     /// Returns the visible entries in display order.
-    pub fn visible_entries(&self) -> impl Iterator<Item = &MentionEntry> {
+    pub fn visible_entries(&self) -> impl Iterator<Item = &FileWalkerMentionEntry> {
         self.visible
             .iter()
             .filter_map(|&index| self.all_entries.get(index))
@@ -135,7 +135,7 @@ impl MentionPopup {
     }
 }
 
-fn walk_workspace(root: &Path) -> Vec<MentionEntry> {
+fn walk_workspace(root: &Path) -> Vec<FileWalkerMentionEntry> {
     let mut entries = Vec::new();
     for result in WalkBuilder::new(root).standard_filters(true).build() {
         let Ok(entry) = result else { continue };
@@ -155,7 +155,7 @@ fn walk_workspace(root: &Path) -> Vec<MentionEntry> {
             .file_type()
             .map(|file_type| file_type.is_dir())
             .unwrap_or(false);
-        entries.push(MentionEntry { rel_path, is_dir });
+        entries.push(FileWalkerMentionEntry { rel_path, is_dir });
     }
     entries
 }
@@ -168,21 +168,21 @@ mod tests {
 
     use super::*;
 
-    fn sample_entries() -> Vec<MentionEntry> {
+    fn sample_entries() -> Vec<FileWalkerMentionEntry> {
         vec![
-            MentionEntry {
+            FileWalkerMentionEntry {
                 rel_path: "SRC/lib.rs".to_string(),
                 is_dir: false,
             },
-            MentionEntry {
+            FileWalkerMentionEntry {
                 rel_path: "src/app.rs".to_string(),
                 is_dir: false,
             },
-            MentionEntry {
+            FileWalkerMentionEntry {
                 rel_path: "docs/readme.md".to_string(),
                 is_dir: false,
             },
-            MentionEntry {
+            FileWalkerMentionEntry {
                 rel_path: "crates".to_string(),
                 is_dir: true,
             },
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn filter_substring_is_case_insensitive() {
-        let mut popup = MentionPopup::with_entries(0, sample_entries());
+        let mut popup = FileWalkerMentionPopup::with_entries(0, sample_entries());
         popup.set_filter("SRC");
         let paths: Vec<&str> = popup
             .visible_entries()
@@ -203,25 +203,25 @@ mod tests {
     #[test]
     fn filter_truncates_to_max_visible() {
         let entries = (0..20)
-            .map(|index| MentionEntry {
+            .map(|index| FileWalkerMentionEntry {
                 rel_path: format!("match-{index}.rs"),
                 is_dir: false,
             })
             .collect();
-        let mut popup = MentionPopup::with_entries(0, entries);
+        let mut popup = FileWalkerMentionPopup::with_entries(0, entries);
         popup.set_filter("match");
         assert_eq!(popup.visible_entries().count(), MAX_VISIBLE);
     }
 
     #[test]
     fn empty_filter_shows_first_entries() {
-        let popup = MentionPopup::with_entries(0, sample_entries());
+        let popup = FileWalkerMentionPopup::with_entries(0, sample_entries());
         assert_eq!(popup.visible_entries().count(), 4);
     }
 
     #[test]
     fn select_next_bounded() {
-        let mut popup = MentionPopup::with_entries(0, sample_entries());
+        let mut popup = FileWalkerMentionPopup::with_entries(0, sample_entries());
         for _ in 0..10 {
             popup.select_next();
         }
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn select_prev_bounded() {
-        let mut popup = MentionPopup::with_entries(0, sample_entries());
+        let mut popup = FileWalkerMentionPopup::with_entries(0, sample_entries());
         popup.select_next();
         popup.select_prev();
         popup.select_prev();
@@ -239,7 +239,7 @@ mod tests {
 
     #[test]
     fn selected_clamps_when_filter_narrows() {
-        let mut popup = MentionPopup::with_entries(0, sample_entries());
+        let mut popup = FileWalkerMentionPopup::with_entries(0, sample_entries());
         popup.select_next();
         popup.select_next();
         popup.select_next();
@@ -253,12 +253,12 @@ mod tests {
     fn select_bounds_respect_visible_cap() {
         // There must be more than MAX_VISIBLE matches so the cap is exercised.
         let entries = (0..(MAX_VISIBLE + 5))
-            .map(|index| MentionEntry {
+            .map(|index| FileWalkerMentionEntry {
                 rel_path: format!("entry-{index}.rs"),
                 is_dir: false,
             })
             .collect();
-        let mut popup = MentionPopup::with_entries(0, entries);
+        let mut popup = FileWalkerMentionPopup::with_entries(0, entries);
         for _ in 0..50 {
             popup.select_next();
         }
@@ -280,7 +280,7 @@ mod tests {
         fs::create_dir(root.join("target")).expect("target dir");
         fs::write(root.join("target/build.log"), "").expect("target file");
 
-        let popup = MentionPopup::open(root, 0).expect("open popup");
+        let popup = FileWalkerMentionPopup::open(root, 0).expect("open popup");
         let paths: Vec<&str> = popup
             .visible_entries()
             .map(|entry| entry.rel_path.as_str())

@@ -16,13 +16,13 @@ use xoxo_core::storage::Storage;
 
 mod events;
 mod history;
-pub(crate) mod mention;
+pub(crate) mod mention_file_walker;
 mod modal;
 mod stats;
 mod sync;
 
 pub use history::{HistoryEntry, HistoryPayload};
-pub use mention::{MentionPopup};
+pub use mention_file_walker::FileWalkerMentionPopup;
 pub use modal::{Modal, ModalContent, ModalMenu, ModalMenuItem};
 
 use history::history_from_chat;
@@ -89,7 +89,7 @@ pub struct App {
     /// Current modal overlay (if any).
     pub modal: Option<Modal>,
     /// Current `@`-mention popup state (if any).
-    pub mention_popup: Option<MentionPopup>,
+    pub mention_popup: Option<FileWalkerMentionPopup>,
     /// Workspace root captured at startup; used for the `@`-mention picker and
     /// path display in the header/status bar.
     pub workspace_root: PathBuf,
