@@ -4,7 +4,7 @@ use xoxo_core::bus::{BusPayload, TurnEvent};
 use xoxo_core::chat::structs::{ChatTextRole, ChatToolCallId, ToolCallEvent, ToolCallStarted};
 use crate::syntax_highlighter::highlight_syntax;
 
-use crate::app::{App, HistoryEntry, HistoryPayload};
+use crate::app::{App, CachedConversation, HistoryEntry, HistoryPayload};
 use crate::tool_format;
 use crate::ui::markdown::render_markdown_message;
 use crate::ui::tool_lines::tool_outcome;
@@ -15,7 +15,37 @@ pub(super) struct ConversationLines {
     pub(super) turn_finished_positions: Vec<usize>,
 }
 
+/// Build — or return a cached copy of — the conversation pane lines.
+///
+/// Rebuilding runs markdown parsing and syntax highlighting over the entire
+/// transcript, so caching pays off any time the frame is redrawn without a
+/// meaningful state change (e.g. per-keystroke redraws, idle refresh ticks).
 pub(super) fn build_conversation_lines(
+    app: &App,
+    header_lines: Vec<Line<'static>>,
+) -> ConversationLines {
+    let key = app.conversation_cache_key();
+    if let Some(cached) = app.cached_conversation.borrow().as_ref()
+        && cached.key == key
+    {
+        return ConversationLines {
+            lines: cached.lines.clone(),
+            turn_finished_positions: cached.turn_finished_positions.clone(),
+        };
+    }
+
+    let built = build_conversation_lines_uncached(app, header_lines);
+
+    *app.cached_conversation.borrow_mut() = Some(CachedConversation {
+        key,
+        lines: built.lines.clone(),
+        turn_finished_positions: built.turn_finished_positions.clone(),
+    });
+
+    built
+}
+
+fn build_conversation_lines_uncached(
     app: &App,
     header_lines: Vec<Line<'static>>,
 ) -> ConversationLines {
@@ -226,6 +256,7 @@ fn collapse_blank_lines(lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
 mod tests {
     use super::*;
 
+    use std::cell::RefCell;
     use std::time::Instant;
 
     use uuid::Uuid;
@@ -265,6 +296,8 @@ mod tests {
             last_turn_finish_reason: None,
             mouse_capture_enabled: true,
             storage: None,
+            conversation_version: 0,
+            cached_conversation: RefCell::new(None),
         }
     }
 

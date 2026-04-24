@@ -250,9 +250,30 @@ mod tests {
     }
 
     #[test]
+    fn select_bounds_respect_visible_cap() {
+        // There must be more than MAX_VISIBLE matches so the cap is exercised.
+        let entries = (0..(MAX_VISIBLE + 5))
+            .map(|index| MentionEntry {
+                rel_path: format!("entry-{index}.rs"),
+                is_dir: false,
+            })
+            .collect();
+        let mut popup = MentionPopup::with_entries(0, entries);
+        for _ in 0..50 {
+            popup.select_next();
+        }
+        assert_eq!(popup.selected_index(), MAX_VISIBLE - 1);
+    }
+
+    #[test]
     fn walk_respects_gitignore() {
         let dir = tempdir().expect("tempdir");
         let root = dir.path();
+        // `ignore` only honors `.gitignore` when the walk root is inside a git
+        // repo, so initialize one. An empty `.git/` directory with a HEAD file
+        // is enough to mark the root as a repo for the `ignore` crate.
+        fs::create_dir(root.join(".git")).expect("git dir");
+        fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").expect("HEAD file");
         fs::write(root.join(".gitignore"), "secret.txt\ntarget\n").expect("gitignore");
         fs::write(root.join("visible.txt"), "").expect("visible file");
         fs::write(root.join("secret.txt"), "").expect("secret file");

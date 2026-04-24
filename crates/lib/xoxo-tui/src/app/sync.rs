@@ -15,17 +15,23 @@ impl App {
         self.active_chat_id = Some(active_chat_id);
         let payload = event.payload;
 
+        // Every branch below either mutates history, in-flight buffers, or
+        // `turn_in_progress` — all inputs to the conversation pane. Bump once
+        // at the end so we don't miss an early-return branch. System messages
+        // are the one exception (bailed out of early with no state change).
         match &payload {
             BusPayload::Turn(TurnEvent::Started) => {
                 self.turn_in_progress = true;
                 self.last_turn_finish_reason = None;
                 self.in_flight_text.remove(&chat_id);
                 self.in_flight_thinking.remove(&chat_id);
+                self.invalidate_conversation_cache();
                 return;
             }
             BusPayload::Turn(TurnEvent::Finished { reason }) => {
                 self.turn_in_progress = false;
                 self.last_turn_finish_reason = Some(*reason);
+                self.invalidate_conversation_cache();
                 return;
             }
             BusPayload::Message(message) => {
@@ -51,6 +57,7 @@ impl App {
                     .entry(chat_id)
                     .or_default()
                     .push_str(delta);
+                self.invalidate_conversation_cache();
                 return;
             }
             BusPayload::ThinkingDelta { delta } => {
@@ -58,6 +65,7 @@ impl App {
                     .entry(chat_id)
                     .or_default()
                     .push_str(delta);
+                self.invalidate_conversation_cache();
                 return;
             }
             _ => {}
@@ -67,6 +75,7 @@ impl App {
             chat_id,
             payload: HistoryPayload::Bus(payload),
         });
+        self.invalidate_conversation_cache();
     }
 
     pub fn sync_chat_summary(&mut self, chat: &Chat) {
@@ -84,6 +93,9 @@ impl App {
         self.context_left_percent = context_left_percent;
         self.max_input_tokens = max_input_tokens;
         self.estimated_cost_usd = estimated_cost_usd;
+        // Header stats are interpolated into the banner that prefixes the
+        // cached conversation lines, so a refresh has to invalidate the cache.
+        self.invalidate_conversation_cache();
     }
 
     pub fn load_chat_session(&mut self, chat_id: Uuid) -> Result<()> {
@@ -105,6 +117,10 @@ impl App {
         self.turn_in_progress = false;
         self.last_turn_finish_reason = None;
         self.sync_chat_summary(&chat);
+        // `sync_chat_summary` already bumps the cache, but the wholesale
+        // history swap above happens first — bump again to be defensive against
+        // reordering.
+        self.invalidate_conversation_cache();
         storage.set_last_used_chat_id(chat.id)?;
         Ok(())
     }
@@ -124,6 +140,7 @@ impl App {
         self.context_left_percent = None;
         self.max_input_tokens = None;
         self.estimated_cost_usd = None;
+        self.invalidate_conversation_cache();
     }
 }
 

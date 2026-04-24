@@ -95,7 +95,7 @@ impl App {
                     return Ok(());
                 }
 
-                if self.mention_popup.is_some() {
+                if let Some(popup) = &mut self.mention_popup {
                     match key.code {
                         KeyCode::Tab => {
                             self.handle_mention_tab();
@@ -110,11 +110,11 @@ impl App {
                             return Ok(());
                         }
                         KeyCode::Up => {
-                            self.mention_popup.as_mut().unwrap().select_prev();
+                            popup.select_prev();
                             return Ok(());
                         }
                         KeyCode::Down => {
-                            self.mention_popup.as_mut().unwrap().select_next();
+                            popup.select_next();
                             return Ok(());
                         }
                         _ => {}

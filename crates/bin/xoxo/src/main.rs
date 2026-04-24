@@ -115,7 +115,7 @@ fn handle_purge_storage(storage: Arc<xoxo_core::storage::Storage>) -> Result<()>
 
 #[cfg(feature = "tui")]
 async fn run_tui(storage: Arc<xoxo_core::storage::Storage>) -> Result<()> {
-    use xoxo_core::bus::{Bus, Command};
+    use xoxo_core::bus::{Bus, BusPayload, Command};
     use xoxo_core::chat::structs::{ChatTextMessage, ChatTextRole};
     use xoxo_tui::{App, Tui, draw};
     use crossterm::event;
@@ -161,9 +161,18 @@ async fn run_tui(storage: Arc<xoxo_core::storage::Storage>) -> Result<()> {
             match daemon::ignore_lagged(events.try_recv()) {
                 Some(event) => {
                     let root_chat_id = *event.path.root_id();
+                    // Only reload the persisted chat for events that actually mutate it.
+                    // Streaming deltas, turn markers, shutdown and error payloads leave the
+                    // stored chat untouched, so reloading on every tick just burns I/O.
+                    let mutates_stored_chat = matches!(
+                        event.payload,
+                        BusPayload::Message(_) | BusPayload::ToolCall(_)
+                    );
                     app.handle_bus_event(event);
-                    if let Some(chat) = storage.load_chat(root_chat_id)? {
-                        app.sync_chat_summary(&chat);
+                    if mutates_stored_chat {
+                        if let Some(chat) = storage.load_chat(root_chat_id)? {
+                            app.sync_chat_summary(&chat);
+                        }
                     }
                 }
                 None => break,

@@ -1,10 +1,12 @@
 //! Application state.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use ratatui::text::Line;
 use uuid::Uuid;
 use xoxo_core::app_state::AppStateRepository;
 use xoxo_core::chat::structs::Chat;
@@ -14,7 +16,7 @@ use xoxo_core::storage::Storage;
 
 mod events;
 mod history;
-mod mention;
+pub(crate) mod mention;
 mod modal;
 mod stats;
 mod sync;
@@ -25,6 +27,26 @@ pub use modal::{Modal, ModalContent, ModalMenu, ModalMenuItem};
 
 use history::history_from_chat;
 use stats::derive_model_stats;
+
+/// Cache key that identifies whether a previously built set of conversation
+/// lines is still valid. Bumps of `conversation_version` cover every piece of
+/// `App` state that feeds the conversation pane (history, in-flight buffers,
+/// turn flag, header stats). The spinner phase is folded in separately because
+/// it advances on time, not on state mutation, and only matters while a turn
+/// is in progress.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ConversationCacheKey {
+    pub(crate) version: u64,
+    pub(crate) spinner_phase: Option<u128>,
+}
+
+/// Cached conversation pane produced by the UI layer. Owned `Line<'static>`s
+/// make caching safe across frames without borrow-checker gymnastics.
+pub(crate) struct CachedConversation {
+    pub(crate) key: ConversationCacheKey,
+    pub(crate) lines: Vec<Line<'static>>,
+    pub(crate) turn_finished_positions: Vec<usize>,
+}
 
 pub struct App {
     /// Controls the main loop.
@@ -84,6 +106,14 @@ pub struct App {
     /// can perform native drag-to-select. Toggled at runtime via `Ctrl+S`.
     pub mouse_capture_enabled: bool,
     pub(crate) storage: Option<Arc<Storage>>,
+    /// Monotonic counter bumped by every mutation that would change the
+    /// rendered conversation pane. Used as the primary cache key component;
+    /// see [`ConversationCacheKey`].
+    pub(crate) conversation_version: u64,
+    /// Memoised output of the last conversation-pane build. Invalidated by the
+    /// cache key computed from `conversation_version` plus the current spinner
+    /// phase while a turn is in progress.
+    pub(crate) cached_conversation: RefCell<Option<CachedConversation>>,
 }
 
 /// Available UI layout variants.
@@ -166,6 +196,34 @@ impl App {
             last_turn_finish_reason: None,
             mouse_capture_enabled: true,
             storage,
+            conversation_version: 0,
+            cached_conversation: RefCell::new(None),
+        }
+    }
+
+    /// Bump the conversation cache version. Call from every mutation that
+    /// would change the conversation pane output (history, in-flight buffers,
+    /// `turn_in_progress`, `active_chat_id`, or header stats consumed by
+    /// [`ui::render_header_lines`]).
+    pub(crate) fn invalidate_conversation_cache(&mut self) {
+        self.conversation_version = self.conversation_version.wrapping_add(1);
+    }
+
+    /// Current spinner phase, if one would be drawn. Matches the cadence used
+    /// by `doing_indicator_style` / `pulsing_tool_dot_style` (200ms per phase).
+    pub(crate) fn spinner_phase(&self) -> Option<u128> {
+        if self.turn_in_progress {
+            Some(self.started_at.elapsed().as_millis() / 200)
+        } else {
+            None
+        }
+    }
+
+    /// Cache key identifying the current conversation build inputs.
+    pub(crate) fn conversation_cache_key(&self) -> ConversationCacheKey {
+        ConversationCacheKey {
+            version: self.conversation_version,
+            spinner_phase: self.spinner_phase(),
         }
     }
 
