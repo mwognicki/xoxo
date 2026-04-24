@@ -101,3 +101,60 @@ async fn env_vars_override_inherited_env() {
     assert_eq!(out.stdout.trim(), "clawrster-test");
     session.kill().await;
 }
+
+#[test]
+fn todo_list_state_rejects_multiple_in_progress_tasks() {
+    let list = ToolExecutionTodoList {
+        tasks: vec![
+            ToolExecutionTodoTask {
+                id: "task_1".to_string(),
+                content: "Inspect the current implementation".to_string(),
+                priority: ToolExecutionTodoPriority::High,
+                state: ToolExecutionTodoState::InProgress,
+            },
+            ToolExecutionTodoTask {
+                id: "task_2".to_string(),
+                content: "Patch the shared execution context".to_string(),
+                priority: ToolExecutionTodoPriority::Medium,
+                state: ToolExecutionTodoState::InProgress,
+            },
+        ],
+    };
+
+    assert_eq!(
+        list.validate(),
+        Err(ToolExecutionTodoListError::MultipleInProgressTasks { count: 2 })
+    );
+}
+
+#[test]
+fn todo_list_state_write_replaces_existing_snapshot() {
+    let mut state = ToolExecutionTodoListState::default();
+    let first = ToolExecutionTodoList {
+        tasks: vec![ToolExecutionTodoTask {
+            id: "task_1".to_string(),
+            content: "Add the shared tool registration".to_string(),
+            priority: ToolExecutionTodoPriority::High,
+            state: ToolExecutionTodoState::Pending,
+        }],
+    };
+    let second = ToolExecutionTodoList {
+        tasks: vec![ToolExecutionTodoTask {
+            id: "task_1".to_string(),
+            content: "Replace the todo list snapshot".to_string(),
+            priority: ToolExecutionTodoPriority::Medium,
+            state: ToolExecutionTodoState::InProgress,
+        }],
+    };
+
+    assert_eq!(
+        state.write(first.clone()),
+        Ok(ToolExecutionTodoListWriteAction::Created)
+    );
+    assert_eq!(state.get(), Some(&first));
+    assert_eq!(
+        state.write(second.clone()),
+        Ok(ToolExecutionTodoListWriteAction::Updated)
+    );
+    assert_eq!(state.get(), Some(&second));
+}

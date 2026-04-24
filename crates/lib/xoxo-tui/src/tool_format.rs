@@ -72,6 +72,19 @@ struct WriteFilePreview {
     content: String,
 }
 
+#[derive(Debug)]
+struct WriteTodoListPreview {
+    action: String,
+    tasks: Vec<WriteTodoListTaskPreview>,
+}
+
+#[derive(Debug)]
+struct WriteTodoListTaskPreview {
+    content: String,
+    priority: String,
+    state: String,
+}
+
 /// Formats the three tool-call bus events for a single tool kind.
 ///
 /// Every method has a default implementation that reproduces the generic
@@ -190,6 +203,23 @@ impl ToolFormatter for WriteFileFormatter {
     }
 }
 
+struct WriteTodoListFormatter;
+
+impl ToolFormatter for WriteTodoListFormatter {
+    fn format_completed(
+        &self,
+        app: &App,
+        completed: &ToolCallCompleted,
+        viewport_width: u16,
+    ) -> Vec<Line<'static>> {
+        let Some(preview) = parse_write_todo_list_preview(&completed.result_preview) else {
+            return DefaultToolFormatter.format_completed(app, completed, viewport_width);
+        };
+
+        render_write_todo_list_preview(&preview)
+    }
+}
+
 /// Extract `(stdout, stderr)` from an exec preview payload.
 ///
 /// Returns `None` if the preview is not a JSON object or the fields have the
@@ -262,6 +292,30 @@ fn parse_write_file_preview(preview: &str) -> Option<WriteFilePreview> {
     })
 }
 
+fn parse_write_todo_list_preview(preview: &str) -> Option<WriteTodoListPreview> {
+    let value: serde_json::Value = serde_json::from_str(preview).ok()?;
+    let kind = value.get("kind")?.as_str()?;
+    if kind != "write_todo_list_preview" {
+        return None;
+    }
+
+    let tasks = value.get("tasks")?.as_array()?;
+    let mut parsed_tasks = Vec::with_capacity(tasks.len());
+
+    for task in tasks {
+        parsed_tasks.push(WriteTodoListTaskPreview {
+            content: task.get("content")?.as_str()?.to_string(),
+            priority: task.get("priority")?.as_str()?.to_string(),
+            state: task.get("state")?.as_str()?.to_string(),
+        });
+    }
+
+    Some(WriteTodoListPreview {
+        action: value.get("action")?.as_str()?.to_string(),
+        tasks: parsed_tasks,
+    })
+}
+
 /// Render an exec stream as dimmed (or red, for errors) lines, honoring
 /// embedded newlines. The first content line gets the same `└ ` elbow the
 /// generic renderer uses; continuation lines are indented to match.
@@ -322,6 +376,38 @@ fn render_write_file_preview(preview: &WriteFilePreview) -> Vec<Line<'static>> {
 
     if lines.len() == 1 {
         lines.push(Line::from(Span::styled("  ", style)));
+    }
+
+    lines
+}
+
+fn render_write_todo_list_preview(preview: &WriteTodoListPreview) -> Vec<Line<'static>> {
+    let mut lines = Vec::with_capacity(preview.tasks.len().max(1) + 1);
+    let header_style = Style::default().fg(Color::DarkGray);
+
+    lines.push(Line::from(Span::styled(
+        format!("└ {} todo list", preview.action),
+        header_style,
+    )));
+
+    if preview.tasks.is_empty() {
+        lines.push(Line::from(Span::styled("  (empty)", header_style)));
+        return lines;
+    }
+
+    for task in &preview.tasks {
+        lines.push(Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(
+                format!("{} ", todo_state_symbol(&task.state)),
+                todo_state_style(&task.state),
+            ),
+            Span::styled(
+                format!("[{}] ", task.priority),
+                todo_priority_style(&task.priority),
+            ),
+            Span::styled(task.content.clone(), todo_state_style(&task.state)),
+        ]));
     }
 
     lines
@@ -546,6 +632,33 @@ fn prefixed_code_line(
     Line::from(spans)
 }
 
+fn todo_state_symbol(state: &str) -> &'static str {
+    match state {
+        "completed" => "▣",
+        "in_progress" => "◧",
+        "cancelled" => "⊠",
+        _ => "□",
+    }
+}
+
+fn todo_state_style(state: &str) -> Style {
+    match state {
+        "completed" => Style::default().fg(Color::Indexed(113)),
+        "in_progress" => Style::default().fg(Color::Indexed(220)),
+        "cancelled" => Style::default().fg(Color::Indexed(245)),
+        _ => Style::default().fg(Color::Indexed(250)),
+    }
+}
+
+fn todo_priority_style(priority: &str) -> Style {
+    match priority {
+        "high" => Style::default().fg(Color::Indexed(203)),
+        "medium" => Style::default().fg(Color::Indexed(180)),
+        "low" => Style::default().fg(Color::Indexed(110)),
+        _ => Style::default().fg(Color::DarkGray),
+    }
+}
+
 /// Resolves a `tool_name` to the formatter that should render its events.
 ///
 /// New per-tool formatters are added as sibling types with their own match
@@ -554,6 +667,7 @@ fn formatter_for(tool_name: &str) -> Box<dyn ToolFormatter> {
     match tool_name {
         "exec" => Box::new(ExecFormatter),
         "patch_file" => Box::new(PatchFileFormatter),
+        "write_todo_list" => Box::new(WriteTodoListFormatter),
         "write_file" => Box::new(WriteFileFormatter),
         _ => Box::new(DefaultToolFormatter),
     }
@@ -798,5 +912,73 @@ mod tests {
 
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].spans[0].content, "└ File saved: src/main.rs");
+    }
+
+    #[test]
+    fn write_todo_list_preview_renders_task_snapshot() {
+        let app = test_app();
+        let completed = ToolCallCompleted {
+            tool_call_id: xoxo_core::chat::structs::ChatToolCallId("tool-3".to_string()),
+            tool_name: "write_todo_list".to_string(),
+            result_preview: serde_json::json!({
+                "kind": "write_todo_list_preview",
+                "action": "updated",
+                "task_count": 4,
+                "tasks": [
+                    {
+                        "id": "task_1",
+                        "content": "Inspect the current registry",
+                        "priority": "high",
+                        "state": "completed"
+                    },
+                    {
+                        "id": "task_2",
+                        "content": "Add the tool formatter",
+                        "priority": "high",
+                        "state": "in_progress"
+                    },
+                    {
+                        "id": "task_3",
+                        "content": "Write focused tests",
+                        "priority": "medium",
+                        "state": "pending"
+                    },
+                    {
+                        "id": "task_4",
+                        "content": "Drop the stale idea",
+                        "priority": "low",
+                        "state": "cancelled"
+                    }
+                ]
+            })
+            .to_string(),
+        };
+
+        let lines = format_completed(&app, &completed, 80);
+
+        assert_eq!(lines.len(), 5);
+        assert_eq!(lines[0].spans[0].content, "└ updated todo list");
+        assert_eq!(lines[1].spans[1].content, "▣ ");
+        assert_eq!(lines[2].spans[1].content, "◧ ");
+        assert_eq!(lines[3].spans[1].content, "□ ");
+        assert_eq!(lines[4].spans[1].content, "⊠ ");
+        assert_eq!(lines[2].spans[2].content, "[high] ");
+        assert_eq!(lines[3].spans[2].content, "[medium] ");
+        assert!(lines[2].spans[3].content.contains("Add the tool formatter"));
+    }
+
+    #[test]
+    fn legacy_write_todo_list_preview_falls_back_to_default_lines() {
+        let app = test_app();
+        let completed = ToolCallCompleted {
+            tool_call_id: xoxo_core::chat::structs::ChatToolCallId("tool-3".to_string()),
+            tool_name: "write_todo_list".to_string(),
+            result_preview: "updated todo list with 2 task(s)".to_string(),
+        };
+
+        let lines = format_completed(&app, &completed, 80);
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].spans[0].content, "└ updated todo list with 2 task(s)");
     }
 }

@@ -28,5 +28,8 @@ inventory = "0.3.24"
 hnsw_rs = { version = "0.3", optional = true }
 instant-distance = { version = "0.6", optional = true }
 
+[dev-dependencies]
+tokio = { workspace = true }
+
 [lints]
 workspace = true

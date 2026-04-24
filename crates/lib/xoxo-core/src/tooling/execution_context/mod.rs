@@ -1,10 +1,12 @@
 mod bash_session;
 mod process_registry;
+mod todo_list;
 
 use std::collections::HashMap;
 
 pub use bash_session::{BashOptions, BashSession, BashSessionError};
 pub use process_registry::{*};
+pub use todo_list::*;
 
 use tokio::sync::Mutex;
 
@@ -155,6 +157,8 @@ pub struct ToolExecutionContext {
     pub config: Config,
     /// Shared registry of files read, written, or patched during this chat.
     pub file_registry: Mutex<ToolExecutionFileRegistry>,
+    /// Session-scoped todo list created by planning tools for this chat tree.
+    pub todo_list: Mutex<ToolExecutionTodoListState>,
 }
 
 impl ToolExecutionContext {
@@ -169,6 +173,7 @@ impl ToolExecutionContext {
             process_registry: ProcessRegistry::new(),
             config: load_config(),
             file_registry: Mutex::new(ToolExecutionFileRegistry::default()),
+            todo_list: Mutex::new(ToolExecutionTodoListState::default()),
         })
     }
 
