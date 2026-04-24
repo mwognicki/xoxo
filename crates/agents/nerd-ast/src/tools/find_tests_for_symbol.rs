@@ -290,7 +290,7 @@ fn search_root_for(file_path: &Path) -> Result<PathBuf, CodeStructureError> {
 }
 
 fn is_project_root(path: &Path) -> bool {
-    ["Cargo.toml", "package.json", "pyproject.toml", "go.mod", ".git"]
+    ["Cargo.toml", "package.json", "pyproject.toml", "go.facade", ".git"]
         .iter()
         .any(|marker| path.join(marker).exists())
 }

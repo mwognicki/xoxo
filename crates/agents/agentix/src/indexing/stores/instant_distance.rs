@@ -175,7 +175,7 @@ mod tests {
             id: ChunkId::new(id),
             kind: ChunkKind::CodeSymbol,
             file_path: path.to_string(),
-            symbol_path: "mod::sym".to_string(),
+            symbol_path: "facade::sym".to_string(),
             language: Some("rust".to_string()),
             byte_range: (0, 1),
             line_range: (1, 1),
