@@ -135,7 +135,7 @@ impl Tool for EvalScriptTool {
             .map_err(|e| ToolError::InvalidInput(e.to_string()))?;
 
         match parsed.language {
-            ScriptLanguage::JsTs => run_js_ts(parsed).await,
+            ScriptLanguage::JsTsDeno => run_js_ts(parsed).await,
             ScriptLanguage::Python => run_python(parsed).await,
             ScriptLanguage::Shell => run_shell(parsed).await,
         }

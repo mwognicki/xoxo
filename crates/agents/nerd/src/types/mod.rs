@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 pub enum ScriptLanguage {
     Python,
     /// JavaScript or TypeScript, executed by Deno.
-    JsTs,
+    JsTsDeno,
     /// Bash shell script.
     Shell,
 }
