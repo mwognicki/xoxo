@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use toml_example::TomlExample;
 
+use crate::config::McpServerConfig;
+
 /// Declared compatibility for a user-defined provider entry.
 #[derive(Default, Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -292,6 +294,9 @@ pub struct Config {
     /// Optional configured LLM providers.
     #[toml_example(nesting)]
     pub providers: Option<Vec<ProviderConfig>>,
+    /// Optional configured MCP servers.
+    #[toml_example(nesting)]
+    pub mcp_servers: Option<Vec<McpServerConfig>>,
     #[toml_example(nesting)]
     pub ui: Option<UiConfig>,
 }
@@ -352,6 +357,7 @@ impl Config {
     ///         model_name: "minimax-m2.5:free".to_string(),
     ///     },
     ///     providers: None,
+    ///     mcp_servers: None,
     ///     ui: None,
     /// };
     ///
@@ -359,6 +365,45 @@ impl Config {
     /// ```
     pub fn providers(&self) -> &[ProviderConfig] {
         self.providers.as_deref().unwrap_or(&[])
+    }
+
+    /// Returns all configured MCP servers as a slice.
+    ///
+    /// # Errors
+    ///
+    /// Never returns an error.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use xoxo_core::config::{
+    ///     CodeQualityConfig, Config, CurrentModelConfig, CurrentProviderConfig,
+    /// };
+    ///
+    /// let config = Config {
+    ///     code_quality: CodeQualityConfig {
+    ///         max_lines_in_file: 400,
+    ///     },
+    ///     current_provider: CurrentProviderConfig {
+    ///         name: "openrouter".to_string(),
+    ///         compatibility: "open_router".to_string(),
+    ///     },
+    ///     current_model: CurrentModelConfig {
+    ///         model_name: "minimax-m2.5:free".to_string(),
+    ///     },
+    ///     providers: None,
+    ///     mcp_servers: None,
+    ///     ui: None,
+    /// };
+    ///
+    /// assert!(config.mcp_servers().is_empty());
+    /// ```
+    pub fn mcp_servers(&self) -> &[McpServerConfig] {
+        self.mcp_servers.as_deref().unwrap_or(&[])
     }
 
     /// Finds a built-in provider entry by its stable identifier.
@@ -390,6 +435,7 @@ impl Config {
     ///         model_name: "minimax-m2.5:free".to_string(),
     ///     },
     ///     providers: Some(vec![ProviderConfig::built_in("openai", None, "secret")]),
+    ///     mcp_servers: None,
     ///     ui: None,
     /// };
     ///
@@ -402,6 +448,63 @@ impl Config {
         self.providers()
             .iter()
             .find(|provider| provider.matches_provider_id(provider_id))
+    }
+
+    /// Finds an MCP server entry by its stable name.
+    ///
+    /// # Errors
+    ///
+    /// Never returns an error.
+    ///
+    /// # Panics
+    ///
+    /// Never panics.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use xoxo_core::config::{
+    ///     CodeQualityConfig, Config, CurrentModelConfig, CurrentProviderConfig, EnvString,
+    ///     McpServerConfig, McpStdioTransportConfig, McpTransportConfig,
+    /// };
+    ///
+    /// let config = Config {
+    ///     code_quality: CodeQualityConfig {
+    ///         max_lines_in_file: 400,
+    ///     },
+    ///     current_provider: CurrentProviderConfig {
+    ///         name: "openrouter".to_string(),
+    ///         compatibility: "open_router".to_string(),
+    ///     },
+    ///     current_model: CurrentModelConfig {
+    ///         model_name: "minimax-m2.5:free".to_string(),
+    ///     },
+    ///     providers: None,
+    ///     mcp_servers: Some(vec![McpServerConfig {
+    ///         name: "filesystem".to_string(),
+    ///         enabled: Some(true),
+    ///         auth: None,
+    ///         transport: McpTransportConfig {
+    ///             kind: "stdio".to_string(),
+    ///             stdio: Some(McpStdioTransportConfig {
+    ///                 command: EnvString::literal("server"),
+    ///             args: None,
+    ///             env: None,
+    ///             cwd: None,
+    ///             }),
+    ///             http: None,
+    ///             sse: None,
+    ///         },
+    ///     }]),
+    ///     ui: None,
+    /// };
+    ///
+    /// assert_eq!(config.mcp_server("filesystem").map(|server| server.name.as_str()), Some("filesystem"));
+    /// ```
+    pub fn mcp_server(&self, name: &str) -> Option<&McpServerConfig> {
+        self.mcp_servers()
+            .iter()
+            .find(|server| server.name == name)
     }
 }
 
@@ -453,10 +556,50 @@ mod tests {
                 model_name: "minimax-m2.5:free".to_string(),
             },
             providers: None,
+            mcp_servers: None,
             ui: None,
         };
 
         assert_eq!(config.current_provider().name, "openrouter");
         assert_eq!(config.current_model().model_name, "minimax-m2.5:free");
+    }
+
+    #[test]
+    fn config_finds_mcp_server_by_name() {
+        let config = Config {
+            code_quality: CodeQualityConfig {
+                max_lines_in_file: 400,
+            },
+            current_provider: CurrentProviderConfig {
+                name: "openrouter".to_string(),
+                compatibility: "open_router".to_string(),
+            },
+            current_model: CurrentModelConfig {
+                model_name: "minimax-m2.5:free".to_string(),
+            },
+            providers: None,
+            mcp_servers: Some(vec![McpServerConfig {
+                name: "filesystem".to_string(),
+                enabled: Some(true),
+                auth: None,
+                transport: crate::config::McpTransportConfig {
+                    kind: "stdio".to_string(),
+                    stdio: Some(crate::config::McpStdioTransportConfig {
+                        command: crate::config::EnvString::literal("server"),
+                        args: None,
+                        env: None,
+                        cwd: None,
+                    }),
+                    http: None,
+                    sse: None,
+                },
+            }]),
+            ui: None,
+        };
+
+        assert_eq!(
+            config.mcp_server("filesystem").map(|server| server.name.as_str()),
+            Some("filesystem")
+        );
     }
 }
