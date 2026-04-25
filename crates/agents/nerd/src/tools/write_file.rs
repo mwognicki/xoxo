@@ -295,6 +295,7 @@ mod tests {
             &WriteFileTool,
             &ToolContext {
                 execution_context: None,
+                available_tools: None,
                 spawner: None,
             },
             json!({

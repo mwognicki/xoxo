@@ -159,6 +159,7 @@ mod tests {
         let exec_ctx = Arc::new(ToolExecutionContext::new(BashOptions::default()).await.unwrap());
         let ctx = ToolContext {
             execution_context: Some(exec_ctx.clone()),
+            available_tools: None,
             spawner: None,
         };
         let tool = WriteTodoListTool::new();
@@ -199,6 +200,7 @@ mod tests {
         let exec_ctx = Arc::new(ToolExecutionContext::new(BashOptions::default()).await.unwrap());
         let ctx = ToolContext {
             execution_context: Some(exec_ctx.clone()),
+            available_tools: None,
             spawner: None,
         };
         let tool = WriteTodoListTool::new();

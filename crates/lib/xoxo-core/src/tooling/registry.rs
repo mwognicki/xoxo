@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use crate::tooling::{Tool, ToolContext, ToolError, ToolExecutionResult, ToolSchema};
+use crate::tooling::{Tool, ToolContext, ToolError, ToolExecutionResult, ToolMetadata, ToolSchema};
 
 /// Object-safe wrapper around [`Tool`].
 ///
@@ -12,6 +12,8 @@ use crate::tooling::{Tool, ToolContext, ToolError, ToolExecutionResult, ToolSche
 pub trait ErasedTool: Send + Sync {
 
     fn schema(&self) -> ToolSchema;
+
+    fn metadata(&self) -> ToolMetadata;
 
     fn map_to_preview(&self, output: &serde_json::Value) -> String;
 
@@ -31,6 +33,10 @@ pub trait ErasedTool: Send + Sync {
 impl<T: Tool> ErasedTool for T {
     fn schema(&self) -> ToolSchema {
         Tool::schema(self)
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        Tool::metadata(self)
     }
 
     fn map_to_preview(&self, output: &serde_json::Value) -> String {
@@ -163,6 +169,7 @@ impl ToolRegistry {
 /// configured to use.
 ///
 /// [`AgentBlueprint::tools`]: crate::types::AgentBlueprint::tools
+#[derive(Clone)]
 pub struct ToolSet {
     tools: HashMap<String, Arc<dyn ErasedTool>>,
 }

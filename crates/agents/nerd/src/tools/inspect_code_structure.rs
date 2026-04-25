@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use agentix::tooling::{
-    ErasedTool, Tool, ToolContext, ToolError, ToolRegistration, ToolSchema,
+    ErasedTool, Tool, ToolContext, ToolError, ToolMetadata, ToolRegistration, ToolSchema,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -48,6 +48,13 @@ impl Tool for InspectCodeStructureTool {
         let language = output["language"].as_str().unwrap_or("unknown");
         let item_count = output["items"].as_array().map_or(0, Vec::len);
         format!("Inspected {language} code structure ({item_count} item(s))")
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            is_read_only: true,
+            supports_concurrent_invocation: true,
+        }
     }
 
     async fn execute(&self, _ctx: &ToolContext, input: Value) -> Result<Value, ToolError> {

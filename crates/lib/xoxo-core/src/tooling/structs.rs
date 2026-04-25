@@ -1,11 +1,13 @@
 use std::sync::Arc;
 use crate::agents::Spawner;
 use crate::chat::structs::CostObservability;
+use crate::tooling::ToolSet;
 use serde::{Deserialize, Serialize};
 use crate::tooling::execution_context::{ToolExecutionContext};
 
 pub struct ToolContext {
     pub execution_context: Option<Arc<ToolExecutionContext>>,
+    pub available_tools: Option<Arc<ToolSet>>,
     pub spawner: Option<Arc<dyn Spawner>>,
 }
 
@@ -32,6 +34,12 @@ impl ToolExecutionResult {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ToolMetadata {
+    pub is_read_only: bool,
+    pub supports_concurrent_invocation: bool,
+}
+
 
 
 /// OpenAI function-calling compatible schema for a [`Tool`].
@@ -51,6 +59,15 @@ pub struct ToolSchema {
 pub trait Tool: Send + Sync {
 
     fn schema(&self) -> ToolSchema;
+
+    /// Describe non-schema execution properties of the tool.
+    ///
+    /// These flags are used by orchestrating tools to enforce runtime safety
+    /// contracts such as batching only read-only tools that are explicitly
+    /// marked safe for concurrent invocation.
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata::default()
+    }
 
     /// Map a full tool result into a client-facing preview string.
     ///

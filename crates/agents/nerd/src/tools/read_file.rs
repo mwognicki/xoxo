@@ -9,7 +9,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use agentix::tooling::{
-    ErasedTool, Tool, ToolContext, ToolError, ToolRegistration, ToolSchema,
+    ErasedTool, Tool, ToolContext, ToolError, ToolMetadata, ToolRegistration, ToolSchema,
 };
 
 /// Import the noise stripper function
@@ -132,6 +132,13 @@ impl Tool for ReadFileTool {
                 format!("Read file successfully ({total_lines} total lines)")
             }
             _ => "Read file successfully".to_string(),
+        }
+    }
+
+    fn metadata(&self) -> ToolMetadata {
+        ToolMetadata {
+            is_read_only: true,
+            supports_concurrent_invocation: true,
         }
     }
 
@@ -348,6 +355,7 @@ mod tests {
             &ReadFileTool,
             &ToolContext {
                 execution_context: None,
+                available_tools: None,
                 spawner: None,
             },
             json!({

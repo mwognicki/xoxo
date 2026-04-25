@@ -106,6 +106,7 @@ mod tests {
             &FindTestsForSymbolTool::new(),
             &ToolContext {
                 execution_context: None,
+                available_tools: None,
                 spawner: None,
             },
             json!({

@@ -33,10 +33,13 @@ impl Tool for ListAllToolsTool {
     ) -> Result<serde_json::Value, ToolError> {
         let tools: Vec<serde_json::Value> = inventory::iter::<ToolRegistration>()
             .map(|r| {
-                let schema = (r.factory)().schema();
+                let tool = (r.factory)();
+                let schema = tool.schema();
+                let metadata = tool.metadata();
                 serde_json::json!({
                     "name": schema.name,
                     "description": schema.description,
+                    "metadata": metadata,
                 })
             })
             .collect();

@@ -168,6 +168,7 @@ mod tests {
             .execute(
                 &ToolContext {
                     execution_context: None,
+                    available_tools: None,
                     spawner: None,
                 },
                 file_path.to_str().unwrap(),

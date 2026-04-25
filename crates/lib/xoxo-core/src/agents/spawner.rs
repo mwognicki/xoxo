@@ -98,6 +98,7 @@ impl AgentSpawner {
     pub fn tool_context(&self) -> ToolContext {
         ToolContext {
             execution_context: None,
+            available_tools: None,
             spawner: Some(self.as_dyn_spawner()),
         }
     }
@@ -145,6 +146,7 @@ impl AgentSpawner {
         let path = ChatPath(vec![chat_id]);
         let execution_context = Some(self.ensure_root_execution_context(chat_id).await?);
         let resolved_tools = self.resolve_tools(&blueprint.allowed_tools)?;
+        let available_tools = Arc::new(resolved_tools.clone());
         let root_chat = self.build_root_chat_shell(chat_id, &blueprint);
         let (command_tx, command_rx) = mpsc::channel(64);
 
@@ -162,6 +164,7 @@ impl AgentSpawner {
             tool_set: resolved_tools,
             tool_context: ToolContext {
                 execution_context: execution_context.clone(),
+                available_tools: Some(available_tools),
                 spawner: Some(self.as_dyn_spawner()),
             },
             events: self.events.clone(),
@@ -215,6 +218,7 @@ impl AgentSpawner {
         let path = ChatPath(vec![chat_id]);
         let execution_context = Some(self.ensure_root_execution_context(chat_id).await?);
         let resolved_tools = self.resolve_tools(&chat.agent.allowed_tools)?;
+        let available_tools = Arc::new(resolved_tools.clone());
         let (command_tx, command_rx) = mpsc::channel(64);
 
         self.persist_chat_snapshot(&chat).await;
@@ -231,6 +235,7 @@ impl AgentSpawner {
             tool_set: resolved_tools,
             tool_context: ToolContext {
                 execution_context: execution_context.clone(),
+                available_tools: Some(available_tools),
                 spawner: Some(self.as_dyn_spawner()),
             },
             events: self.events.clone(),
@@ -272,6 +277,7 @@ impl AgentSpawner {
         let child_path = input.parent_path.child(child_chat_id);
         let child_chat = self.build_chat_shell(&input, child_chat_id);
         let resolved_tools = self.resolve_tools(&input.inline_spec.tools)?;
+        let available_tools = Arc::new(resolved_tools.clone());
         let (command_tx, command_rx) = mpsc::channel(64);
         let shared_execution_context = self
             .tree_execution_contexts
@@ -296,6 +302,7 @@ impl AgentSpawner {
             tool_set: resolved_tools,
             tool_context: ToolContext {
                 execution_context: shared_execution_context.clone(),
+                available_tools: Some(available_tools),
                 spawner: Some(self.as_dyn_spawner()),
             },
             events: self.events.clone(),

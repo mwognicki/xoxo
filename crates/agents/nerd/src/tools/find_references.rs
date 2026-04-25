@@ -105,6 +105,7 @@ mod tests {
             &FindReferencesTool::new(),
             &ToolContext {
                 execution_context: None,
+                available_tools: None,
                 spawner: None,
             },
             json!({
