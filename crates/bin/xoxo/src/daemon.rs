@@ -103,7 +103,12 @@ async fn handle_submit_user_message(
         .into_iter()
         .map(|skill| skill.name)
         .collect();
-    let system_prompt = build_base_prompt(&current_model.model_name, &tool_registry.all_schemas());
+    let has_available_mcp_servers = !config.mcp_servers().is_empty();
+    let system_prompt = build_base_prompt(
+        &current_model.model_name,
+        &tool_registry.all_schemas(),
+        has_available_mcp_servers,
+    );
     let blueprint = ChatAgent {
         id: None,
         name: Some("nerd".to_string()),

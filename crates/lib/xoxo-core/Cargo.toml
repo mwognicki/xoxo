@@ -38,6 +38,7 @@ toml-example = "0.16"
 rig-core = "0.35.0"
 sled = "0.34.7"
 llm_models_spider = "0.1.80"
+rust-mcp-sdk = "0.9.0"
 
 
 [dev-dependencies]

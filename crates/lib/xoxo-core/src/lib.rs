@@ -16,3 +16,4 @@ pub mod log_layer;
 pub mod chat;
 pub mod config;
 pub mod llm;
+pub mod mcp;

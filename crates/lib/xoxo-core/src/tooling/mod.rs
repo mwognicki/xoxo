@@ -1,3 +1,4 @@
+mod mcp_tools;
 mod structs;
 mod registry;
 mod execution_context;
