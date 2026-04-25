@@ -8,9 +8,9 @@ use std::time::Instant;
 
 use ratatui::text::Line;
 use uuid::Uuid;
-use xoxo_core::app_state::AppStateRepository;
 use xoxo_core::chat::structs::Chat;
 use xoxo_core::chat::to_user_facing_chat;
+use xoxo_core::config::load_config;
 use xoxo_core::llm::LlmFinishReason;
 use xoxo_core::storage::Storage;
 
@@ -133,7 +133,7 @@ impl App {
     }
 
     pub fn new_with_storage(restored_chat: Option<Chat>, storage: Option<Arc<Storage>>) -> Self {
-        let app_state = AppStateRepository::new().load_or_create().ok();
+        let config = load_config();
         let restored_summary = restored_chat.as_ref().map(to_user_facing_chat);
         let active_chat_id = restored_chat.as_ref().map(|chat| chat.id);
         let history = restored_chat
@@ -143,12 +143,7 @@ impl App {
         let current_model_name = restored_summary
             .as_ref()
             .map(|summary| summary.current_model_name.clone())
-            .or_else(|| {
-                app_state
-                    .as_ref()
-                    .map(|state| state.current_model.model_name.clone())
-            })
-            .unwrap_or_else(|| "<unknown model>".to_string());
+            .unwrap_or_else(|| config.current_model().model_name.clone());
         let total_input_tokens = restored_summary
             .as_ref()
             .map(|summary| summary.total_input_tokens)
@@ -173,10 +168,7 @@ impl App {
             input: String::new(),
             active_chat_id,
             pending_submission: None,
-            current_provider_name: app_state
-                .as_ref()
-                .map(|state| state.current_provider.name.clone())
-                .unwrap_or_else(|| "<unknown provider>".to_string()),
+            current_provider_name: config.current_provider().name.clone(),
             current_model_name,
             total_input_tokens,
             total_output_tokens,

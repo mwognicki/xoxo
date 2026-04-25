@@ -3,9 +3,10 @@ use nerd::build_base_prompt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use xoxo_core::agents::{AgentHandle, AgentSpawner};
-use xoxo_core::app_state::AppStateRepository;
 use xoxo_core::bus::{Bus, BusEnvelope, BusPayload, Command, CommandInbox, ErrorPayload};
-use xoxo_core::chat::structs::{ChatAgent, ChatPath, ChatTextMessage};
+use xoxo_core::chat::structs::{
+    ApiCompatibility, ApiProvider, ChatAgent, ChatPath, ChatTextMessage, ModelConfig,
+};
 use xoxo_core::config::{ProviderConfig, load_config};
 use xoxo_core::storage::Storage;
 use xoxo_core::tooling::ToolRegistry;
@@ -66,8 +67,8 @@ async fn handle_submit_user_message(
     message: ChatTextMessage,
 ) -> Result<()> {
     let config = load_config();
-    let app_state = AppStateRepository::new().load_or_create()?;
-    let provider_config = resolve_current_provider_config(&config, &app_state)?;
+    let provider_config = resolve_current_provider_config(&config)?;
+    let current_model = current_model_from_config(&config);
     let tool_registry = ToolRegistry::new();
 
     if let Some(chat_id) = active_chat_id {
@@ -97,11 +98,11 @@ async fn handle_submit_user_message(
 
     let chat_id = Uuid::new_v4();
     let tool_names = tool_registry.all_tool_names();
-    let system_prompt = build_base_prompt(&app_state.current_model.model_name, &tool_registry.all_schemas());
+    let system_prompt = build_base_prompt(&current_model.model_name, &tool_registry.all_schemas());
     let blueprint = ChatAgent {
         id: None,
         name: Some("nerd".to_string()),
-        model: app_state.current_model.clone(),
+        model: current_model,
         base_prompt: system_prompt,
         allowed_tools: tool_names,
         allowed_skills: Vec::new(),
@@ -117,13 +118,14 @@ async fn handle_submit_user_message(
 
 fn resolve_current_provider_config(
     config: &xoxo_core::config::Config,
-    app_state: &xoxo_core::app_state::AppState,
 ) -> Result<ProviderConfig> {
-    if let Some(provider) = config.provider(&app_state.current_provider.name) {
+    let current_provider = config.current_provider();
+
+    if let Some(provider) = config.provider(&current_provider.name) {
         return Ok(provider.clone());
     }
 
-    match app_state.current_provider.name.as_str() {
+    match current_provider.name.as_str() {
         "openrouter" => Ok(ProviderConfig::built_in(
             "openrouter",
             None,
@@ -132,6 +134,27 @@ fn resolve_current_provider_config(
         other => Err(anyhow::anyhow!(
             "missing provider config for current provider {other}"
         )),
+    }
+}
+
+fn current_model_from_config(config: &xoxo_core::config::Config) -> ModelConfig {
+    let current_provider = config.current_provider();
+
+    ModelConfig {
+        model_name: config.current_model().model_name.clone(),
+        provider: ApiProvider {
+            name: current_provider.name.clone(),
+            compatibility: parse_compatibility(&current_provider.compatibility),
+        },
+    }
+}
+
+fn parse_compatibility(raw: &str) -> ApiCompatibility {
+    match raw {
+        "open_router" | "openrouter" => ApiCompatibility::OpenRouter,
+        "open_ai" | "openai" | "open_ai_like" => ApiCompatibility::OpenAiLike,
+        "anthropic" | "anthropic_like" => ApiCompatibility::AnthropicLike,
+        _ => ApiCompatibility::OpenAiLike,
     }
 }
 
