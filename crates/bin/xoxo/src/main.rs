@@ -27,6 +27,9 @@ enum Command {
     /// Run the TUI overlay (embeds the daemon in-process).
     #[cfg(feature = "tui")]
     Tui,
+    /// Run the ACP front-end (embeds the daemon in-process).
+    #[cfg(feature = "acp")]
+    Acp,
     /// Development tools
     #[command(subcommand)]
     Dev(DevCommand),
@@ -56,6 +59,8 @@ async fn main() -> Result<()> {
         Command::Daemon => run_headless_daemon(storage).await,
         #[cfg(feature = "tui")]
         Command::Tui => run_tui(storage).await,
+        #[cfg(feature = "acp")]
+        Command::Acp => run_acp(storage).await,
         Command::Dev(dev_cmd) => match dev_cmd {
             DevCommand::DumpStoredChat { chat_id, last_used } => {
                 handle_dump_stored_chat(storage.as_ref(), chat_id, last_used)?;
@@ -195,4 +200,16 @@ async fn run_headless_daemon(storage: Arc<xoxo_core::storage::Storage>) -> Resul
 
     let (bus, inbox) = Bus::new();
     daemon::run_daemon_until_shutdown(bus, inbox, storage).await
+}
+
+#[cfg(feature = "acp")]
+async fn run_acp(storage: Arc<xoxo_core::storage::Storage>) -> Result<()> {
+    use xoxo_core::bus::Bus;
+    use xoxo_acp::AcpServer;
+
+    let (bus, inbox) = Bus::new();
+    let _daemon = daemon::spawn_daemon(bus.clone(), inbox, storage.clone());
+    let server = AcpServer::new(bus, storage);
+    server.serve().await?;
+    Ok(())
 }

@@ -8,6 +8,7 @@ members = [
     "crates/agents/concierge",
     "crates/lib/xoxo-core",
     "crates/lib/xoxo-tui",
+    "crates/lib/xoxo-acp",
 ]
 
 [workspace.package]
@@ -23,6 +24,7 @@ agentix = { path = "crates/agents/agentix" }
 nerd-ast = { path = "crates/agents/nerd-ast" }
 xoxo-core = { path = "crates/lib/xoxo-core" }
 xoxo-tui = { path = "crates/lib/xoxo-tui" }
+xoxo-acp = { path = "crates/lib/xoxo-acp" }
 nerd = { path = "crates/agents/nerd" }
 concierge = { path = "crates/agents/concierge" }
 

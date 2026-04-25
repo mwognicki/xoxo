@@ -1,0 +1,25 @@
+[package]
+name = "xoxo-acp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Optional Agent Context Protocol (ACP) front-end for xoxo. Bus client only."
+
+[dependencies]
+xoxo-core = { workspace = true }
+
+tokio = { workspace = true, features = ["io-std"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures = { workspace = true }
+uuid = { version = "1" }
+agent-client-protocol = "0.11"
+
+[lints]
+workspace = true

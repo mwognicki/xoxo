@@ -195,7 +195,7 @@ pub async fn run_daemon_until_shutdown(
     Ok(())
 }
 
-#[cfg(feature = "tui")]
+#[cfg(any(feature = "tui", feature = "acp"))]
 pub fn spawn_daemon(
     bus: Bus,
     inbox: CommandInbox,
