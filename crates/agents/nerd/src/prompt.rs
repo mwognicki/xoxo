@@ -1,4 +1,5 @@
 use agentix::tooling::{Tool, ToolSchema};
+use agentix::skills::SkillDescriptor;
 
 use crate::tools::{
     ensure_import::EnsureImportTool, eval_script::EvalScriptTool, exec::ExecTool,
@@ -23,6 +24,7 @@ use crate::tools::rename_symbol::RenameSymbolTool;
 /// base schema.
 pub fn build_base_prompt(model_name: &str, extra_tool_schemas: &[ToolSchema]) -> String {
     let schemas = merged_schemas(extra_tool_schemas);
+    let skills = agentix::skills::discover_available_skills();
 
     let tools_block = if schemas.is_empty() {
         "Available tools: none.".to_string()
@@ -34,6 +36,7 @@ pub fn build_base_prompt(model_name: &str, extra_tool_schemas: &[ToolSchema]) ->
             .join("\n");
         format!("Available tools:\n{rendered}")
     };
+    let skills_block = render_skills_block(&skills);
 
     format!(
         "You are helpful assistant, helping experienced software engineers develop software.\n\
@@ -52,7 +55,8 @@ pub fn build_base_prompt(model_name: &str, extra_tool_schemas: &[ToolSchema]) ->
         You have access to following tools you can use for your tasks. Remember that tools can be \n\
         used not only explicitly, but also in clever ways. For example, when you are asked about \n\
         current time, you can always use the shell execution or script evaluation tools. \n\
-{tools_block}"
+{tools_block}\n\
+{skills_block}"
     )
 }
 
@@ -91,4 +95,27 @@ fn merged_schemas(extras: &[ToolSchema]) -> Vec<ToolSchema> {
         }
     }
     merged
+}
+
+fn render_skills_block(skills: &[SkillDescriptor]) -> String {
+    if skills.is_empty() {
+        return "Available skills: none.".to_string();
+    }
+
+    let rendered = skills
+        .iter()
+        .map(|skill| format!("- {}: {}", skill.name, skill.description))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("Available skills:\n{rendered}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_skills_block;
+
+    #[test]
+    fn renders_empty_skills_block() {
+        assert_eq!(render_skills_block(&[]), "Available skills: none.");
+    }
 }

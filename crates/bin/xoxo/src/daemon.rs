@@ -1,4 +1,5 @@
 use anyhow::Result;
+use agentix::skills::discover_available_skills;
 use nerd::build_base_prompt;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -98,6 +99,10 @@ async fn handle_submit_user_message(
 
     let chat_id = Uuid::new_v4();
     let tool_names = tool_registry.all_tool_names();
+    let allowed_skills = discover_available_skills()
+        .into_iter()
+        .map(|skill| skill.name)
+        .collect();
     let system_prompt = build_base_prompt(&current_model.model_name, &tool_registry.all_schemas());
     let blueprint = ChatAgent {
         id: None,
@@ -105,7 +110,7 @@ async fn handle_submit_user_message(
         model: current_model,
         base_prompt: system_prompt,
         allowed_tools: tool_names,
-        allowed_skills: Vec::new(),
+        allowed_skills,
     };
     let handle = spawner
         .spawn_root(chat_id, blueprint, message, provider_config)

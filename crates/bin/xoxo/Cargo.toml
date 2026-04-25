@@ -17,6 +17,7 @@ concierge = ["dep:concierge"]
 
 [dependencies]
 xoxo-core = { workspace = true }
+agentix = { workspace = true }
 nerd = { workspace = true }
 concierge = { workspace = true, optional = true }
 xoxo-tui = { workspace = true, optional = true }
