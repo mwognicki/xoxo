@@ -1,13 +1,14 @@
 //! Input box rendering, sizing, and text wrapping.
 
 use ratatui::layout::{Alignment, Position, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, TitlePosition};
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
 use crate::app::App;
+use crate::app::commands::inline_suggestion_suffix;
 
 const INPUT_BOX_BORDER_HEIGHT: u16 = 2;
 const MIN_INPUT_BOX_HEIGHT: u16 = INPUT_BOX_BORDER_HEIGHT + 1;
@@ -42,6 +43,15 @@ pub(super) fn render_input(frame: &mut Frame, app: &App, area: Rect, input_promp
         area.x + cursor_x,
         area.y + 1 + cursor_visible_line,
     ));
+
+    render_inline_command_suggestion(
+        frame,
+        app,
+        area,
+        cursor_x,
+        cursor_visible_line,
+        input_scroll_y,
+    );
 }
 
 /// Compute the desired height of the input box based on the current buffer.
@@ -79,6 +89,43 @@ fn input_line_count(input: &str) -> usize {
     }
 
     input.chars().filter(|&character| character == '\n').count() + 1
+}
+
+fn render_inline_command_suggestion(
+    frame: &mut Frame,
+    app: &App,
+    area: Rect,
+    cursor_x: u16,
+    cursor_visible_line: u16,
+    input_scroll_y: u16,
+) {
+    if input_scroll_y > 0 {
+        return;
+    }
+
+    let Some(suffix) = inline_suggestion_suffix(&app.input) else {
+        return;
+    };
+    if suffix.is_empty() || cursor_x >= area.width {
+        return;
+    }
+
+    let suggestion_area = Rect {
+        x: area.x + cursor_x,
+        y: area.y + 1 + cursor_visible_line,
+        width: area.width.saturating_sub(cursor_x),
+        height: 1,
+    };
+    if suggestion_area.width == 0 {
+        return;
+    }
+
+    let suggestion = Paragraph::new(suffix).style(
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM),
+    );
+    frame.render_widget(suggestion, suggestion_area);
 }
 
 fn wrap_input_text(input_prompt: &str, input: &str, width: usize) -> Vec<String> {

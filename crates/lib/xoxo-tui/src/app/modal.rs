@@ -7,7 +7,17 @@
 //! Modals are dismissed via the `Esc` key. Interactive modals can also handle
 //! navigation keys before they are dismissed.
 
+mod config;
+mod menu;
+mod provider_pane;
+
+#[cfg(test)]
+mod tests;
+
 use crossterm::event::KeyCode;
+
+pub use config::{ConfigFocus, ConfigModal};
+pub use menu::{ModalMenu, ModalMenuItem};
 
 /// Content of a modal overlay currently shown to the user.
 pub struct Modal {
@@ -26,30 +36,8 @@ pub enum ModalContent {
     Text(String),
     /// Selectable, paginated menu body.
     Menu(ModalMenu),
-}
-
-/// Selectable menu state for modal content.
-pub struct ModalMenu {
-    /// Menu items in display order.
-    pub items: Vec<ModalMenuItem>,
-    /// Currently selected item index within the full item list.
-    pub selected_index: usize,
-    /// Current zero-based page index.
-    pub page_index: usize,
-    /// Number of items rendered on each page.
-    pub page_size: usize,
-    /// Text rendered when the menu has no items.
-    pub empty_message: String,
-}
-
-/// Display data for a single modal menu row.
-pub struct ModalMenuItem {
-    /// Primary row text.
-    pub label: String,
-    /// Secondary row text.
-    pub detail: String,
-    /// Optional opaque value associated with the row.
-    pub value: Option<String>,
+    /// Two-pane configuration shell used for future settings workflows.
+    Config(ConfigModal),
 }
 
 impl Modal {
@@ -79,18 +67,25 @@ impl Modal {
         }
     }
 
+    /// Builds the dedicated config modal shell.
+    pub fn config(
+        title: impl Into<String>,
+        config: ConfigModal,
+        footer: impl Into<String>,
+    ) -> Self {
+        Self {
+            title: title.into(),
+            content: ModalContent::Config(config),
+            footer: footer.into(),
+        }
+    }
+
     /// Handles up/down/left/right/enter navigation for interactive modals.
     pub fn handle_navigation_key(&mut self, key: KeyCode) {
-        let ModalContent::Menu(menu) = &mut self.content else {
-            return;
-        };
-        match key {
-            KeyCode::Up => menu.select_previous(),
-            KeyCode::Down => menu.select_next(),
-            KeyCode::Left => menu.previous_page(),
-            KeyCode::Right => menu.next_page(),
-            KeyCode::Enter => {}
-            _ => {}
+        match &mut self.content {
+            ModalContent::Menu(menu) => menu.handle_navigation_key(key),
+            ModalContent::Config(_) => {}
+            ModalContent::Text(_) => {}
         }
     }
 
@@ -102,7 +97,7 @@ impl Modal {
         menu.selected_value()
     }
 
-    /// Returns the footer text with dynamic menu page information when present.
+    /// Returns the footer text with dynamic navigation information when present.
     pub fn footer_text(&self) -> String {
         match &self.content {
             ModalContent::Text(_) => self.footer.clone(),
@@ -112,76 +107,13 @@ impl Modal {
                 menu.display_page_number(),
                 menu.total_pages()
             ),
+            ModalContent::Config(config) => format!(
+                "{} {} Section {}/{} ",
+                self.footer.trim_end(),
+                config.footer_hint().trim(),
+                config.selected_index + 1,
+                config.sections.len().max(1)
+            ),
         }
-    }
-}
-
-impl ModalMenu {
-    /// Builds modal menu state with a fixed page size.
-    pub fn new(
-        items: Vec<ModalMenuItem>,
-        page_size: usize,
-        empty_message: impl Into<String>,
-    ) -> Self {
-        Self {
-            items,
-            selected_index: 0,
-            page_index: 0,
-            page_size: page_size.max(1),
-            empty_message: empty_message.into(),
-        }
-    }
-
-    /// Returns the current page's item range.
-    pub fn page_bounds(&self) -> (usize, usize) {
-        let start = self.page_index.saturating_mul(self.page_size);
-        let end = start.saturating_add(self.page_size).min(self.items.len());
-        (start, end)
-    }
-
-    fn selected_value(&self) -> Option<&str> {
-        self.items
-            .get(self.selected_index)
-            .and_then(|item| item.value.as_deref())
-    }
-
-    fn select_previous(&mut self) {
-        if self.items.is_empty() {
-            return;
-        }
-        self.selected_index = self.selected_index.saturating_sub(1);
-        self.page_index = self.selected_index / self.page_size;
-    }
-
-    fn select_next(&mut self) {
-        if self.items.is_empty() {
-            return;
-        }
-        self.selected_index = (self.selected_index + 1).min(self.items.len() - 1);
-        self.page_index = self.selected_index / self.page_size;
-    }
-
-    fn previous_page(&mut self) {
-        if self.page_index == 0 {
-            return;
-        }
-        self.page_index -= 1;
-        self.selected_index = self.page_index * self.page_size;
-    }
-
-    fn next_page(&mut self) {
-        if self.page_index + 1 >= self.total_pages() {
-            return;
-        }
-        self.page_index += 1;
-        self.selected_index = self.page_index * self.page_size;
-    }
-
-    fn display_page_number(&self) -> usize {
-        self.page_index + 1
-    }
-
-    fn total_pages(&self) -> usize {
-        self.items.len().div_ceil(self.page_size).max(1)
     }
 }

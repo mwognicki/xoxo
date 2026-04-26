@@ -15,6 +15,7 @@ use xoxo_core::storage::Storage;
 
 use crate::app::{HistoryEntry, HistoryPayload, FileWalkerMentionPopup};
 use crate::app::mention_file_walker::FileWalkerMentionEntry;
+use crate::app::{ConfigFocus, ModalContent};
 
 fn press_enter(app: &mut App) {
     app.handle_event(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)))
@@ -197,6 +198,24 @@ fn help_command_opens_modal_on_enter() {
 }
 
 #[test]
+fn config_command_opens_config_modal_on_enter() {
+    let mut app = App::new(None);
+    app.input = "/config".to_string();
+
+    press_enter(&mut app);
+
+    let Some(modal) = &app.modal else {
+        panic!("config modal should be open");
+    };
+    let ModalContent::Config(config) = &modal.content else {
+        panic!("expected config modal content");
+    };
+    assert_eq!(config.selected_index, 0);
+    assert_eq!(config.focus, ConfigFocus::Navigation);
+    assert_eq!(app.input, "");
+}
+
+#[test]
 fn typing_help_without_enter_does_not_open_modal() {
     let mut app = App::new(None);
 
@@ -208,6 +227,65 @@ fn typing_help_without_enter_does_not_open_modal() {
         app.modal.is_none(),
         "modal must not auto-open while typing — only on Enter"
     );
+}
+
+#[test]
+fn tab_accepts_inline_command_suggestion() {
+    let mut app = App::new(None);
+
+    for character in "/he".chars() {
+        press_char(&mut app, character);
+    }
+    press_key(&mut app, KeyCode::Tab);
+
+    assert_eq!(app.input, "/help");
+    assert_eq!(app.layout, LayoutMode::Main);
+}
+
+#[test]
+fn enter_accepts_inline_command_suggestion() {
+    let mut app = App::new(None);
+
+    for character in "/co".chars() {
+        press_char(&mut app, character);
+    }
+    press_enter(&mut app);
+
+    let Some(modal) = &app.modal else {
+        panic!("config modal should open from inline suggestion");
+    };
+    assert!(
+        matches!(modal.content, ModalContent::Config(_)),
+        "config modal should open from inline suggestion"
+    );
+    assert_eq!(app.input, "");
+}
+
+#[test]
+fn config_modal_navigation_keys_update_focus_and_selection() {
+    let mut app = App::new(None);
+    app.open_config_modal();
+
+    press_key(&mut app, KeyCode::Down);
+    press_key(&mut app, KeyCode::Tab);
+
+    let Some(modal) = &app.modal else {
+        panic!("config modal should still be open");
+    };
+    let ModalContent::Config(config) = &modal.content else {
+        panic!("expected config modal");
+    };
+    assert_eq!(config.selected_index, 1);
+    assert_eq!(config.focus, ConfigFocus::Detail);
+}
+
+#[test]
+fn tab_without_command_suggestion_toggles_layout() {
+    let mut app = App::new(None);
+
+    press_key(&mut app, KeyCode::Tab);
+
+    assert_eq!(app.layout, LayoutMode::Alternate);
 }
 
 #[test]

@@ -3,7 +3,8 @@ mod modals;
 use anyhow::Result;
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 
-use crate::app::{App, LayoutMode};
+use crate::app::{App, LayoutMode, ModalContent};
+use crate::app::commands::{SlashCommand, inline_suggestion_suffix, resolve_slash_command};
 
 impl App {
     pub fn handle_event(&mut self, event: Event) -> Result<()> {
@@ -33,15 +34,32 @@ impl App {
                 }
 
                 if self.modal.is_some() {
-                    if matches!(key.code, KeyCode::Esc) {
-                        self.modal = None;
-                    } else if matches!(key.code, KeyCode::Enter) {
-                        if let Some(chat_id) = self.selected_modal_chat_id() {
-                            self.load_chat_session(chat_id)?;
-                            self.modal = None;
+                    if let Some(modal) = &mut self.modal {
+                        match &mut modal.content {
+                            ModalContent::Config(config) => {
+                                if matches!(key.code, KeyCode::Esc) {
+                                    if !config.handle_escape() {
+                                        self.modal = None;
+                                    }
+                                } else {
+                                    config.handle_key(key);
+                                    self.current_provider_name =
+                                        config.current_provider_name().to_string();
+                                }
+                            }
+                            _ if matches!(key.code, KeyCode::Esc) => {
+                                self.modal = None;
+                            }
+                            _ if matches!(key.code, KeyCode::Enter) => {
+                                if let Some(chat_id) = self.selected_modal_chat_id() {
+                                    self.load_chat_session(chat_id)?;
+                                    self.modal = None;
+                                }
+                            }
+                            _ => {
+                                modal.handle_navigation_key(key.code);
+                            }
                         }
-                    } else if let Some(modal) = &mut self.modal {
-                        modal.handle_navigation_key(key.code);
                     }
                     return Ok(());
                 }
@@ -79,6 +97,13 @@ impl App {
                     return Ok(());
                 }
 
+                if matches!(key.code, KeyCode::Tab)
+                    && let Some(suffix) = inline_suggestion_suffix(&self.input)
+                {
+                    self.input.push_str(suffix);
+                    return Ok(());
+                }
+
                 match key.code {
                     KeyCode::Tab => {
                         self.layout = match self.layout {
@@ -108,11 +133,14 @@ impl App {
                     }
                     KeyCode::Enter => {
                         let line: String = self.input.drain(..).collect();
-                        match line.as_str() {
-                            "/quit" => self.running = false,
-                            "/clear" | "/new" => self.reset_for_new_chat(),
-                            "/help" => self.open_help_modal(),
-                            "/sessions" => self.open_sessions_modal()?,
+                        match resolve_slash_command(&line) {
+                            Some(SlashCommand::Quit) => self.running = false,
+                            Some(SlashCommand::Clear | SlashCommand::New) => {
+                                self.reset_for_new_chat();
+                            }
+                            Some(SlashCommand::Config) => self.open_config_modal(),
+                            Some(SlashCommand::Help) => self.open_help_modal(),
+                            Some(SlashCommand::Sessions) => self.open_sessions_modal()?,
                             _ if !line.is_empty() && !line.starts_with('/') => {
                                 self.pending_submission = Some(line);
                             }

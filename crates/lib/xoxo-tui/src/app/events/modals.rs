@@ -1,12 +1,14 @@
 use anyhow::Result;
 use chrono::{DateTime, Local};
 use uuid::Uuid;
+use xoxo_core::config::load_config;
 use xoxo_core::storage::ChatSessionSummary;
 
-use crate::app::{App, Modal, ModalMenu, ModalMenuItem};
+use crate::app::{App, ConfigModal, Modal, ModalMenu, ModalMenuItem};
 
 const HELP_BODY: &str = "
 Available Commands:
+  /config  - Open configuration
   /help    - Show this help message
   /quit    - Exit the application
   /clear   - Start a fresh chat
@@ -24,6 +26,8 @@ Type your message and press Enter to send.";
 const HELP_FOOTER: &str = " Esc to close ";
 const SESSIONS_PAGE_SIZE: usize = 10;
 const SESSIONS_FOOTER: &str = " Up/Down select  Left/Right page  Enter load later  Esc close ";
+const CONFIG_FOOTER: &str =
+    " Up/Down move  Left/Right focus panes  Tab switch pane  PgUp/PgDn jump  Home/End edge  Esc close ";
 
 impl App {
     pub(crate) fn open_help_modal(&mut self) {
@@ -45,6 +49,15 @@ impl App {
             SESSIONS_FOOTER,
         ));
         Ok(())
+    }
+
+    pub(crate) fn open_config_modal(&mut self) {
+        let config = load_config();
+        self.modal = Some(Modal::config(
+            " Config ",
+            ConfigModal::from_config(&config),
+            CONFIG_FOOTER,
+        ));
     }
 
     pub(super) fn selected_modal_chat_id(&self) -> Option<Uuid> {

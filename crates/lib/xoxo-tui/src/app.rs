@@ -17,13 +17,16 @@ use xoxo_core::storage::Storage;
 mod events;
 mod history;
 pub(crate) mod mention_file_walker;
+pub(crate) mod commands;
 mod modal;
 mod stats;
 mod sync;
 
 pub use history::{HistoryEntry, HistoryPayload};
 pub use mention_file_walker::FileWalkerMentionPopup;
-pub use modal::{Modal, ModalContent, ModalMenu, ModalMenuItem};
+pub use modal::{
+    ConfigFocus, ConfigModal, Modal, ModalContent, ModalMenu, ModalMenuItem,
+};
 
 use history::history_from_chat;
 use stats::derive_model_stats;
