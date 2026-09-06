@@ -111,6 +111,8 @@ What does not belong here:
 
 **Reference over inline.** When material belongs at root visibility but would crowd this file — design deep-dives, long rationale — it moves to a nested file and root carries a one-line pointer. Design record lives under `docs/adr/`; dependency findings under `docs/references/` (per `deep-research`).
 
+**Nested guidance.** Directories that own an area (a crate, an agent, the TUI) may carry their own `CLAUDE.md` stating the area's purpose, commands, and conventions; leaf and utility directories carry none. These files land **opportunistically**: when a slice already works an area that lacks guidance, the slice leaves one behind — never as a dedicated guidance-writing slice. Until one exists, this file is the entry point for that area. Nested files follow the same rules as this one: factual, current, no placeholders.
+
 ## Keeping guidance current
 
 Guidance is living documentation, and the root file goes stale easiest because it sits farthest from the code. When any of these happen, the affected guidance file is updated **in the same slice**:
