@@ -90,15 +90,21 @@ Invariant: the workspace must build with any combination of these features (incl
 - **TUI is a bus client, not a privileged one.** The TUI must not reach into daemon internals; it subscribes to events and sends commands like any other client. This keeps a future out-of-process TUI (over a socket) a drop-in change.
 - **Agent crates depend on `xoxo-core` / `agentix` only.** They do not depend on the binary crate, on the TUI, or on each other. They expose capabilities through `xoxo-core` contracts. `nerd-ast` is the one exception in the reverse direction: `nerd` depends on it as a pure library.
 
-## Rust conventions
+## Skills
 
-Rust style, error-handling, and architecture rules for this repo live in `.claude/skills/rust-best-practices/SKILL.md`. Load that skill when writing, reviewing, or refactoring Rust here. Highlights that frequently bite:
+Skill content lives in `.agents/skills/` — the single source of truth, harness-agnostic. Harness-specific directories (`.claude/skills/`) hold **symlinks only**. To add a skill: put content in `.agents/skills/<name>/`, then symlink `../../.agents/skills/<name>` from each harness directory. Never place skill content directly in a harness directory.
 
-- `#![deny(warnings)]` at every crate root; no un-commented `#[allow(...)]`.
-- `thiserror` for library errors, `anyhow` for binary/CLI glue.
-- No `unwrap()`/`expect()` in production paths without a `// SAFETY:` or `// INVARIANT:` comment.
-- 400-line soft cap per file; split before it hurts.
-- No `sleep`-based synchronization in tests — use channels/barriers.
+Loaded skills:
+
+- `maintainer-interaction` — every prompt. Slicing, green lights, commits, reports; all `reference/` files are mandatory reading.
+- `rust-best-practices` — writing, reviewing, or refactoring Rust here. Highlights that frequently bite:
+  - `#![deny(warnings)]` at every crate root; no un-commented `#[allow(...)]`.
+  - `thiserror` for library errors, `anyhow` for binary/CLI glue.
+  - No `unwrap()`/`expect()` in production paths without a `// SAFETY:` or `// INVARIANT:` comment.
+  - 400-line soft cap per file; split before it hurts.
+  - No `sleep`-based synchronization in tests — use channels/barriers.
+- `architecture-best-practices` — architecture-level decisions across crates/modules. Default heading; `rust-best-practices` restates it Rust-idiomatically and may override individual rules.
+- `deep-research` — any research-shaped task: codebase questions, cross-file reasoning, dependency discovery. Top-down spider crawl from entry points; no fan-out without approval.
 
 ## Build & test
 
