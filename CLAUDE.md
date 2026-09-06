@@ -2,6 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Governing rule — maintainers lead
+
+The `maintainer-interaction` skill is first-class here. Every interaction, slice, report, and commit complies with it. This file declares no exceptions to it.
+
+- Agents operate as engineers: they propose, execute named work, and carry the mechanical load. They hold no final decision authority. Architecture decisions belong to the maintainer, always.
+- ADR regime: anything architectural — the bus contract, agent/chat model, LLM facade shape, feature gating, storage — lands as an ADR in `docs/adr/` with maintainer sign-off before code. Agents may draft an ADR; they never self-approve one and never route around an existing one.
+
 ## Project
 
 `xoxo` is a personal AI assistant inspired by Mistral Le Vibe, OpenAI Codex, and OpenCode, tailored with custom tweaks. It is primarily a coding assistant (`nerd`), with an **opt-in** path to act as a more versatile general-purpose assistant (`concierge`).
@@ -89,6 +96,28 @@ Invariant: the workspace must build with any combination of these features (incl
 - **Spawning is a tool call, not a bus command.** There is no `SubagentSpawned` / `SubagentCompleted` event. Spawn observability goes through `ToolCallStarted { kind: SpawnSubagent { .. } }` + the matching `Completed`/`Failed`.
 - **TUI is a bus client, not a privileged one.** The TUI must not reach into daemon internals; it subscribes to events and sends commands like any other client. This keeps a future out-of-process TUI (over a socket) a drop-in change.
 - **Agent crates depend on `xoxo-core` / `agentix` only.** They do not depend on the binary crate, on the TUI, or on each other. They expose capabilities through `xoxo-core` contracts. `nerd-ast` is the one exception in the reverse direction: `nerd` depends on it as a pure library.
+
+## This file's job — entry point, not kitchen sink
+
+Root agentic guidance does exactly two things:
+
+1. **Research entry point.** Every codebase crawl (`deep-research` skill: top-down, spider-like) starts here. What this file reveals picks the next read.
+2. **High-level map.** What has landed and how it fits together, at the level a first read needs.
+
+What does not belong here:
+
+- Template placeholders, proposed crate layouts, "future structure" notes. Structure is a maintainer decision with ADR provenance; guidance documents what exists, never what might. If it isn't landed, it isn't written down.
+- Any rule that belongs to a skill. This file points at skills; it does not restate or override them.
+
+**Reference over inline.** When material belongs at root visibility but would crowd this file — design deep-dives, long rationale — it moves to a nested file and root carries a one-line pointer. Design record lives under `docs/adr/`; dependency findings under `docs/references/` (per `deep-research`).
+
+## Keeping guidance current
+
+Guidance is living documentation, and the root file goes stale easiest because it sits farthest from the code. When any of these happen, the affected guidance file is updated **in the same slice**:
+
+- a crate lands, moves, or leaves → update the map here
+- the bus contract or facade shape changes → update here and the owning ADR
+- guidance and reality disagree → reality wins; fix the guidance and say so in the slice report
 
 ## Skills
 
